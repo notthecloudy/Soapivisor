@@ -36,7 +36,7 @@ It is hugely helpful and speeds up investigation of a bug check or a hang issue
 if the following files are provided:
 - a Debug build version of a compiled SYS file and a PDB file
 - a full set of source code used to build the SYS file if it has been modified
-- a log file (i.e., C:\Windows\HyperPlatform.log)
+- a log file (i.e., C:\Windows\Soapivisor.log)
 - a system crash dump file (i.e., C:\Windows\MEMORY.DMP)
 
 GitHub does not support attaching of any binary files into issues. You may use
