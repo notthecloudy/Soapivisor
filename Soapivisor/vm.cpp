@@ -713,6 +713,8 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
   __cpuid(cpu_info_cal, 0);
   ULONG64 tsc_end = __rdtsc();
   // Assume true VM-exit overhead is approx 3-4x native CPUID.
+  // Note: This is a pre-launch approximation and does not account for the full 
+  // VM-exit roundtrip overhead, but provides a realistic baseline.
   ULONG64 tsc_exit_latency = (tsc_end - tsc_start) * 4;
   error |= UtilVmWrite64(VmcsField::kTscOffset, static_cast<ULONG64>(-tsc_exit_latency));
 

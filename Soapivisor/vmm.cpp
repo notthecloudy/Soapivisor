@@ -100,6 +100,10 @@ static void VmmpHandleException(_Inout_ GuestContext *guest_context);
 static void VmmpHandleCpuid(_Inout_ GuestContext *guest_context);
 
 
+static void VmmpHandleRdtsc(_Inout_ GuestContext *guest_context);
+
+static void VmmpHandleRdtscp(_Inout_ GuestContext *guest_context);
+
 static void VmmpHandleXsetbv(_Inout_ GuestContext *guest_context);
 
 static void VmmpHandleMsrReadAccess(_Inout_ GuestContext *guest_context);

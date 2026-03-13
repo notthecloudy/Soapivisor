@@ -238,158 +238,22 @@ UtilInitialization(PDRIVER_OBJECT driver_object) {
   return status;
 }
 
+static PhysicalMemoryDescriptor *g_utilp_physical_memory_ranges;
+
+// Initializes g_utilp_p*e_base, g_utilp_p*i_shift and g_utilp_p*i_mask.
+_Use_decl_annotations_ static NTSTATUS UtilpInitializePageTableVariables() {
+  return STATUS_SUCCESS;
+}
+
 // Terminates utility functions
 _Use_decl_annotations_ void UtilTermination() {
-  PAGED_CODE()
-
   if (g_utilp_physical_memory_ranges) {
     ExFreePoolWithTag(g_utilp_physical_memory_ranges,
                       kSoapivisorCommonPoolTag);
   }
 }
 
-// Initializes g_utilp_p*e_base, g_utilp_p*i_shift and g_utilp_p*i_mask.
-_Use_decl_annotations_ static NTSTATUS UtilpInitializePageTableVariables() {
-  PAGED_CODE()
 
-#include "util_page_constants.h"  // Include platform dependent constants
-
-  // Check OS version to know if page table base addresses need to be relocated
-  RTL_OSVERSIONINFOW os_version;
-  os_version.dwOSVersionInfoSize = sizeof(os_version);
-  auto status = RtlGetVersion(&os_version);
-  if (!NT_SUCCESS(status)) {
-    return status;
-  }
-
-  // Win 10 build 14316 is the first version implements randomized page tables
-  // Use fixed values if a systems is either: x86, older than Windows 7, or
-  // older than build 14316.
-  if (!IsX64() || os_version.dwMajorVersion < 10 ||
-      os_version.dwBuildNumber < 14316) {
-    if (IsX64()) {
-      g_utilp_pxe_base = kUtilpPxeBase;
-      g_utilp_ppe_base = kUtilpPpeBase;
-      g_utilp_pxi_shift = kUtilpPxiShift;
-      g_utilp_ppi_shift = kUtilpPpiShift;
-      g_utilp_pxi_mask = kUtilpPxiMask;
-      g_utilp_ppi_mask = kUtilpPpiMask;
-    }
-    if (UtilIsX86Pae()) {
-      g_utilp_pde_base = kUtilpPdeBasePae;
-      g_utilp_pte_base = kUtilpPteBasePae;
-      g_utilp_pdi_shift = kUtilpPdiShiftPae;
-      g_utilp_pti_shift = kUtilpPtiShiftPae;
-      g_utilp_pdi_mask = kUtilpPdiMaskPae;
-      g_utilp_pti_mask = kUtilpPtiMaskPae;
-    } else {
-      g_utilp_pde_base = kUtilpPdeBase;
-      g_utilp_pte_base = kUtilpPteBase;
-      g_utilp_pdi_shift = kUtilpPdiShift;
-      g_utilp_pti_shift = kUtilpPtiShift;
-      g_utilp_pdi_mask = kUtilpPdiMask;
-      g_utilp_pti_mask = kUtilpPtiMask;
-    }
-    return status;
-  }
-
-  // Get PTE_BASE from MmGetVirtualForPhysical
-  const auto p_MmGetVirtualForPhysical =
-      UtilGetSystemProcAddress(L"MmGetVirtualForPhysical");
-  if (!p_MmGetVirtualForPhysical) {
-    return STATUS_PROCEDURE_NOT_FOUND;
-  }
-
-  static const UCHAR kPatternWin10x64[] = {
-      0x48, 0x8b, 0x04, 0xd0,  // mov     rax, [rax+rdx*8]
-      0x48, 0xc1, 0xe0, 0x19,  // shl     rax, 19h
-      0x48, 0xba,              // mov     rdx, ????????`????????  ; PTE_BASE
-  };
-  auto found = reinterpret_cast<ULONG_PTR>(
-      UtilMemMem(p_MmGetVirtualForPhysical, 0x30, kPatternWin10x64,
-                 sizeof(kPatternWin10x64)));
-  if (!found) {
-    return STATUS_PROCEDURE_NOT_FOUND;
-  }
-
-  found += sizeof(kPatternWin10x64);
-  Soapivisor_LOG_DEBUG("Found a hard coded PTE_BASE at %016Ix", found);
-
-  const auto pte_base = *reinterpret_cast<ULONG_PTR *>(found);
-  const auto index = (pte_base >> kUtilpPxiShift) & kUtilpPxiMask;
-  const auto pde_base = pte_base | (index << kUtilpPpiShift);
-  const auto ppe_base = pde_base | (index << kUtilpPdiShift);
-  const auto pxe_base = ppe_base | (index << kUtilpPtiShift);
-
-  g_utilp_pxe_base = static_cast<ULONG_PTR>(pxe_base);
-  g_utilp_ppe_base = static_cast<ULONG_PTR>(ppe_base);
-  g_utilp_pde_base = static_cast<ULONG_PTR>(pde_base);
-  g_utilp_pte_base = static_cast<ULONG_PTR>(pte_base);
-
-  g_utilp_pxi_shift = kUtilpPxiShift;
-  g_utilp_ppi_shift = kUtilpPpiShift;
-  g_utilp_pdi_shift = kUtilpPdiShift;
-  g_utilp_pti_shift = kUtilpPtiShift;
-
-  g_utilp_pxi_mask = kUtilpPxiMask;
-  g_utilp_ppi_mask = kUtilpPpiMask;
-  g_utilp_pdi_mask = kUtilpPdiMask;
-  g_utilp_pti_mask = kUtilpPtiMask;
-  return status;
-}
-
-// Locates RtlPcToFileHeader
-_Use_decl_annotations_ static NTSTATUS UtilpInitializeRtlPcToFileHeader(
-    PDRIVER_OBJECT driver_object) {
-  PAGED_CODE()
-
-  if (kUtilpUseRtlPcToFileHeader) {
-    const auto p_RtlPcToFileHeader =
-        UtilGetSystemProcAddress(L"RtlPcToFileHeader");
-    if (p_RtlPcToFileHeader) {
-      g_utilp_RtlPcToFileHeader =
-          static_cast<RtlPcToFileHeaderType *>(p_RtlPcToFileHeader);
-      return STATUS_SUCCESS;
-    }
-  }
-
-#pragma warning(push)
-#pragma warning(disable : 28175)
-  auto module = static_cast<KLdrDataTableEntry *>(driver_object->DriverSection);
-#pragma warning(pop)
-
-  g_utilp_PsLoadedModuleList = module->in_load_order_links.Flink;
-  g_utilp_RtlPcToFileHeader = UtilpUnsafePcToFileHeader;
-  return STATUS_SUCCESS;
-}
-
-// A fake RtlPcToFileHeader without acquiring PsLoadedModuleSpinLock. Thus, it
-// is unsafe and should be updated if we can locate PsLoadedModuleSpinLock.
-_Use_decl_annotations_ static PVOID NTAPI
-UtilpUnsafePcToFileHeader(PVOID pc_value, PVOID *base_of_image) {
-  if (pc_value < MmSystemRangeStart) {
-    return nullptr;
-  }
-
-  const auto head = g_utilp_PsLoadedModuleList;
-  for (auto current = head->Flink; current != head; current = current->Flink) {
-    const auto module =
-        CONTAINING_RECORD(current, KLdrDataTableEntry, in_load_order_links);
-    const auto driver_end = reinterpret_cast<void *>(
-        reinterpret_cast<ULONG_PTR>(module->dll_base) + module->size_of_image);
-    if (UtilIsInBounds(pc_value, module->dll_base, driver_end)) {
-      *base_of_image = module->dll_base;
-      return module->dll_base;
-    }
-  }
-  return nullptr;
-}
-
-// A wrapper of RtlPcToFileHeader
-_Use_decl_annotations_ void *UtilPcToFileHeader(void *pc_value) {
-  void *base = nullptr;
-  return g_utilp_RtlPcToFileHeader(pc_value, &base);
-}
 
 // Initializes the physical memory ranges
 _Use_decl_annotations_ static NTSTATUS UtilpInitializePhysicalMemoryRanges() {
@@ -504,32 +368,9 @@ UtilForEachProcessor(NTSTATUS (*callback_routine)(void *), void *context) {
 // is queued for all processors.
 _Use_decl_annotations_ NTSTATUS
 UtilForEachProcessorDpc(PKDEFERRED_ROUTINE deferred_routine, void *context) {
-  const auto number_of_processors =
-      KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
-  for (ULONG processor_index = 0; processor_index < number_of_processors;
-       processor_index++) {
-    PROCESSOR_NUMBER processor_number = {};
-    auto status =
-        KeGetProcessorNumberFromIndex(processor_index, &processor_number);
-    if (!NT_SUCCESS(status)) {
-      return status;
-    }
-
-    const auto dpc = static_cast<PRKDPC>(ExAllocatePoolZero(
-        NonPagedPool, sizeof(KDPC), kSoapivisorCommonPoolTag));
-    if (!dpc) {
-      return STATUS_MEMORY_NOT_ALLOCATED;
-    }
-    KeInitializeDpc(dpc, deferred_routine, context);
-    KeSetImportanceDpc(dpc, HighImportance);
-    status = KeSetTargetProcessorDpcEx(dpc, &processor_number);
-    if (!NT_SUCCESS(status)) {
-      ExFreePoolWithTag(dpc, kSoapivisorCommonPoolTag);
-      return status;
-    }
-    KeInsertQueueDpc(dpc, nullptr, nullptr);
-  }
-  return STATUS_SUCCESS;
+  UNREFERENCED_PARAMETER(deferred_routine);
+  UNREFERENCED_PARAMETER(context);
+  return STATUS_NOT_IMPLEMENTED;
 }
 
 // Sleep the current thread's execution for Millisecond milliseconds.
@@ -689,27 +530,13 @@ _Use_decl_annotations_ void *UtilVaFromPfn(PFN_NUMBER pfn) {
 // Allocates continuous physical memory
 _Use_decl_annotations_ void *UtilAllocateContiguousMemory(
     SIZE_T number_of_bytes) {
-  PHYSICAL_ADDRESS highest_acceptable_address = {};
-  highest_acceptable_address.QuadPart = -1;
-  if (g_utilp_MmAllocateContiguousNodeMemory) {
-    // Allocate NX physical memory
-    PHYSICAL_ADDRESS lowest_acceptable_address = {};
-    PHYSICAL_ADDRESS boundary_address_multiple = {};
-    return g_utilp_MmAllocateContiguousNodeMemory(
-        number_of_bytes, lowest_acceptable_address, highest_acceptable_address,
-        boundary_address_multiple, PAGE_READWRITE, MM_ANY_NODE_OK);
-  } else {
-#pragma warning(push)
-#pragma warning(disable : 30029)
-    return MmAllocateContiguousMemory(number_of_bytes,
-                                      highest_acceptable_address);
-#pragma warning(pop)
-  }
+  UNREFERENCED_PARAMETER(number_of_bytes);
+  return nullptr;
 }
 
 // Frees an address allocated by UtilAllocateContiguousMemory()
 _Use_decl_annotations_ void UtilFreeContiguousMemory(void *base_address) {
-  MmFreeContiguousMemory(base_address);
+  UNREFERENCED_PARAMETER(base_address);
 }
 
 // Executes VMCALL
