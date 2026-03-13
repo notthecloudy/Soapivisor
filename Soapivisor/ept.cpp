@@ -308,24 +308,41 @@ _Use_decl_annotations_ void EptInitializeMtrrEntries() {
     NT_ASSERT(k4kBase + offset == 0x100000);
   }
 
+  // Get MAXPHYADDR
+  int cpu_info[4];
+  __cpuid(cpu_info, 0x80000008);
+  const auto physical_address_bits = 
+      static_cast<unsigned char>(cpu_info[0] & 0xff);
+  const auto max_phys_mask = (1ull << physical_address_bits) - 1;
+
   // Read all variable range MTRRs
   for (ULONG64 i = 0; i < mtrr_capabilities.fields.variable_range_count; i++) {
     // Read MTRR mask and check if it is in use
-    const auto phy_mask = static_cast<ULONG>(Msr::kIa32MtrrPhysMaskN) + i * 2;
-    Ia32MtrrPhysMaskMsr mtrr_mask = {UtilReadMsr64(static_cast<Msr>(phy_mask))};
+    const auto phy_mask_msr = static_cast<ULONG>(Msr::kIa32MtrrPhysMaskN) + i * 2;
+    Ia32MtrrPhysMaskMsr mtrr_mask = {UtilReadMsr64(static_cast<Msr>(phy_mask_msr))};
     if (!mtrr_mask.fields.valid) {
       continue;
     }
 
-    // Get a length this MTRR manages
-    ULONG length;
-    BitScanForward64(&length, mtrr_mask.fields.phys_mask * PAGE_SIZE);
+    // Correctly calculate the length based on the mask and MAXPHYADDR.
+    // The mask only includes bits 12:MAXPHYADDR-1.
+    // Bits above MAXPHYADDR-1 are reserved and should be zero in the MSR, 
+    // but the hardware treats them as 1 for address matching.
+    const auto mask = (mtrr_mask.fields.phys_mask << 12) & max_phys_mask;
+    
+    // Find the lowest set bit in the mask (above bit 11) to determine range size
+    unsigned long lowest_bit;
+    if (!_BitScanForward64(&lowest_bit, mask)) {
+        continue;
+    }
 
-    // Read MTRR base and calculate a range this MTRR manages
-    const auto phy_base = static_cast<ULONG>(Msr::kIa32MtrrPhysBaseN) + i * 2;
-    Ia32MtrrPhysBaseMsr mtrr_base = {UtilReadMsr64(static_cast<Msr>(phy_base))};
-    ULONG64 base = mtrr_base.fields.phys_base * PAGE_SIZE;
-    ULONG64 end = base + (1ull << length) - 1;
+    const auto size = 1ull << lowest_bit;
+
+    // Read MTRR base
+    const auto phy_base_msr = static_cast<ULONG>(Msr::kIa32MtrrPhysBaseN) + i * 2;
+    Ia32MtrrPhysBaseMsr mtrr_base = {UtilReadMsr64(static_cast<Msr>(phy_base_msr))};
+    const auto base = mtrr_base.fields.phys_base * PAGE_SIZE;
+    const auto end = base + size - 1;
 
     // Save it
     mtrr_entries[index].enabled = true;

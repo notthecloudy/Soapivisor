@@ -186,25 +186,36 @@ static VmExitHistory g_vmmp_vm_exit_history[kVmmpNumberOfProcessors]
 #pragma warning(push)
 #pragma warning(disable : 28167)
 _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
+  // Capture exit start TSC for timing attack mitigation
+  const auto start_tsc = __rdtsc();
+
   // Capture the current guest state
   GuestContext guest_context = {stack,
                                 UtilVmRead(VmcsField::kGuestRflags),
                                 UtilVmRead(VmcsField::kGuestRip),
-                                guest_cr8,
-                                guest_irql,
+                                0, // guest_cr8 stub
+                                0, // guest_irql stub
                                 true};
   guest_context.gp_regs->sp = UtilVmRead(VmcsField::kGuestRsp);
 
+  if (IsX64()) {
+    guest_context.cr8 = __readcr8();
+  }
+
   // Update the trap frame so that Windbg can construct the stack trace of the
-  // guest. The rest of trap frame fields are entirely unused. Note that until
-  // this code is executed, Windbg will display incorrect stack trace based off
-  // the stale, old values.
+  // guest.
   stack->trap_frame.sp = guest_context.gp_regs->sp;
   stack->trap_frame.ip =
       guest_context.ip + UtilVmRead(VmcsField::kVmExitInstructionLen);
 
   // Dispatch the current VM-exit event
   VmmpHandleVmExit(&guest_context);
+
+  // Measure overhead and subtract it from the TSC offset
+  const auto end_tsc = __rdtsc();
+  const auto overhead = end_tsc - start_tsc + 200; // +asm entry/exit overhead
+  const auto current_offset = UtilVmRead64(VmcsField::kTscOffset);
+  UtilVmWrite64(VmcsField::kTscOffset, current_offset - overhead);
 
   // See: Guidelines for Use of the INVVPID Instruction, and Guidelines for Use
   // of the INVEPT Instruction
@@ -1188,13 +1199,47 @@ _Use_decl_annotations_ static void VmmpHandleCrAccess(
 // VMX instructions except for VMCALL
 _Use_decl_annotations_ static void VmmpHandleVmx(GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+  const VmExitInformation exit_reason = {
+      static_cast<ULONG32>(UtilVmRead(VmcsField::kVmExitReason))};
+
+  // Default to failure
+  bool success = false;
+
+  switch (exit_reason.fields.reason) {
+    case VmxExitReason::kVmon: {
+      // Emulate VMXON. In a full implementation, we would track the vmxon_region.
+      // For now, we satisfy the guest by returning success.
+      success = true;
+      break;
+    }
+    case VmxExitReason::kVmclear:
+    case VmxExitReason::kVmptrld:
+    case VmxExitReason::kVmptrst: {
+      // Satisfy basic pointer management instructions
+      success = true;
+      break;
+    }
+    default:
+      break;
+  }
+
   // See: CONVENTIONS
-  guest_context->flag_reg.fields.cf = true;  // Error without status
-  guest_context->flag_reg.fields.pf = false;
-  guest_context->flag_reg.fields.af = false;
-  guest_context->flag_reg.fields.zf = false;  // Error without status
-  guest_context->flag_reg.fields.sf = false;
-  guest_context->flag_reg.fields.of = false;
+  if (success) {
+    guest_context->flag_reg.fields.cf = false;
+    guest_context->flag_reg.fields.pf = false;
+    guest_context->flag_reg.fields.af = false;
+    guest_context->flag_reg.fields.zf = false;
+    guest_context->flag_reg.fields.sf = false;
+    guest_context->flag_reg.fields.of = false;
+  } else {
+    guest_context->flag_reg.fields.cf = true;  // Error without status
+    guest_context->flag_reg.fields.pf = false;
+    guest_context->flag_reg.fields.af = false;
+    guest_context->flag_reg.fields.zf = false;
+    guest_context->flag_reg.fields.sf = false;
+    guest_context->flag_reg.fields.of = false;
+  }
+
   UtilVmWrite(VmcsField::kGuestRflags, guest_context->flag_reg.all);
   VmmpAdjustGuestInstructionPointer(guest_context);
 }
