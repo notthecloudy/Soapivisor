@@ -431,8 +431,10 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
 
   if (function_id == 1) {
     // Hide hypervisor presence (Clear CPUID.1:ECX[31])
+    // But ensure VMX support is reported (bit 5) for Nested VMX
     CpuFeaturesEcx cpu_features = {static_cast<ULONG32>(cpu_info[2])};
-    cpu_features.fields.not_used = false; // This is bit 31 (HypervisorPresent)
+    cpu_features.fields.not_used = false; // bit 31
+    cpu_features.fields.vmx = true;       // bit 5
     cpu_info[2] = static_cast<int>(cpu_features.all);
   } else if (function_id >= 0x40000000 && function_id <= 0x400000FF) {
     // Intercept hypervisor leaves. Report zeros or minimal info to avoid self-ID.
@@ -559,7 +561,17 @@ _Use_decl_annotations_ static void VmmpHandleMsrAccess(
         msr_value.QuadPart = UtilVmRead(vmcs_field);
       }
     } else {
-      msr_value.QuadPart = UtilReadMsr64(msr);
+      // Shadowing for Nested VMX
+      if (msr == Msr::kIa32FeatureControl) {
+        // Return hardware value but ensure Lock and VMXON outside SMX bits are set
+        msr_value.QuadPart = UtilReadMsr64(msr) | 0x5; // Lock (bit 0) | VMXON outside SMX (bit 2)
+      } else if (msr >= Msr::kIa32VmxBasic && msr <= Msr::kIa32VmxVmfunc) {
+        // Pass through VMX capability MSRs for now. 
+        // In a more advanced implementation, we would mask out features Soapivisor doesn't support nesting.
+        msr_value.QuadPart = UtilReadMsr64(msr);
+      } else {
+        msr_value.QuadPart = UtilReadMsr64(msr);
+      }
     }
     guest_context->gp_regs->ax = msr_value.LowPart;
     guest_context->gp_regs->dx = msr_value.HighPart;
@@ -573,6 +585,10 @@ _Use_decl_annotations_ static void VmmpHandleMsrAccess(
         UtilVmWrite(vmcs_field, static_cast<ULONG_PTR>(msr_value.QuadPart));
       }
     } else {
+      // Optional: Prevent guest from disabling VMX in FEAT_CTL
+      if (msr == Msr::kIa32FeatureControl) {
+          // Ignore or handle appropriately
+      }
       UtilWriteMsr64(msr, msr_value.QuadPart);
     }
   }
@@ -1214,8 +1230,11 @@ _Use_decl_annotations_ static void VmmpHandleVmx(GuestContext *guest_context) {
     }
     case VmxExitReason::kVmclear:
     case VmxExitReason::kVmptrld:
-    case VmxExitReason::kVmptrst: {
-      // Satisfy basic pointer management instructions
+    case VmxExitReason::kVmptrst:
+    case VmxExitReason::kVmread:
+    case VmxExitReason::kVmwrite: {
+      // Satisfy basic nested virtualization management instructions.
+      // Success is indicated by RFLAGS.CF=0 and RFLAGS.ZF=0.
       success = true;
       break;
     }
@@ -1288,6 +1307,11 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
     case HypercallNumber::kProcessSharedBuffer:
       VmmpHandleSharedBuffer(guest_context);
       VmmpIndicateSuccessfulVmcall(guest_context);
+      break;
+    case HypercallNumber::kPrepareForSleep:
+      // De-virtualization requested due to S3/S4 transition.
+      // We reuse the termination logic to cleanly VMXOFF all cores.
+      VmmpHandleVmCallTermination(guest_context, context);
       break;
   }
 }
