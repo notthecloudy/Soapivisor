@@ -4,7 +4,7 @@
 
 /// @file
 /// Implements primitive utility functions.
-#include <ntddk.h>
+#include "common.h"
 #include <ntimage.h>
 #include "util.h"
 #include <intrin.h>

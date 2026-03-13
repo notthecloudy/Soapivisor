@@ -99,9 +99,6 @@ static void VmmpHandleException(_Inout_ GuestContext *guest_context);
 
 static void VmmpHandleCpuid(_Inout_ GuestContext *guest_context);
 
-static void VmmpHandleRdtsc(_Inout_ GuestContext *guest_context);
-
-static void VmmpHandleRdtscp(_Inout_ GuestContext *guest_context);
 
 static void VmmpHandleXsetbv(_Inout_ GuestContext *guest_context);
 
@@ -271,10 +268,6 @@ _Use_decl_annotations_ static void VmmpHandleVmExit(
       break;
     case VmxExitReason::kInvlpg:
       VmmpHandleInvalidateTlbEntry(guest_context);
-      break;
-    case VmxExitReason::kRdtsc:
-      VmmpHandleRdtsc(guest_context);
-      break;
     case VmxExitReason::kCrAccess:
       VmmpHandleCrAccess(guest_context);
       break;
@@ -320,10 +313,6 @@ _Use_decl_annotations_ static void VmmpHandleVmExit(
     case VmxExitReason::kInvept:
     case VmxExitReason::kInvvpid:
       VmmpHandleVmx(guest_context);
-      break;
-    case VmxExitReason::kRdtscp:
-      VmmpHandleRdtscp(guest_context);
-      break;
     case VmxExitReason::kXsetbv:
       VmmpHandleXsetbv(guest_context);
       break;
@@ -440,6 +429,13 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
     cpu_info[1] = 0;
     cpu_info[2] = 0;
     cpu_info[3] = 0;
+  } else if (function_id == 0x77777777) {
+    // Expose dynamic shared buffer physical address to usermode caller
+    extern UINT64 g_SharedBufferPhysicalAddress;
+    cpu_info[0] = static_cast<int>(g_SharedBufferPhysicalAddress & 0xFFFFFFFF);
+    cpu_info[1] = static_cast<int>(g_SharedBufferPhysicalAddress >> 32);
+    cpu_info[2] = 0;
+    cpu_info[3] = 0;
   }
 
   guest_context->gp_regs->ax = cpu_info[0];
@@ -450,41 +446,6 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
   VmmpAdjustGuestInstructionPointer(guest_context);
 }
 
-// RDTSC
-_Use_decl_annotations_ static void VmmpHandleRdtsc(
-    GuestContext *guest_context) {
-  // Instead of performance measuring macro which adds overhead, just do it quickly
-  ULARGE_INTEGER tsc = {};
-  tsc.QuadPart = __rdtsc();
-  
-  // Spoof timing: subtract an approximate VM-exit cycle cost (e.g., 500-1000 cycles)
-  // to hide the time spent in this hypervisor handler.
-  const ULONG64 kVmExitOverhead = 750;
-  tsc.QuadPart -= kVmExitOverhead;
-
-  guest_context->gp_regs->dx = tsc.HighPart;
-  guest_context->gp_regs->ax = tsc.LowPart;
-
-  VmmpAdjustGuestInstructionPointer(guest_context);
-}
-
-// RDTSCP
-_Use_decl_annotations_ static void VmmpHandleRdtscp(
-    GuestContext *guest_context) {
-  unsigned int tsc_aux = 0;
-  ULARGE_INTEGER tsc = {};
-  tsc.QuadPart = __rdtscp(&tsc_aux);
-  
-  // Spoof timing: subtract an approximate VM-exit cycle cost
-  const ULONG64 kVmExitOverhead = 750;
-  tsc.QuadPart -= kVmExitOverhead;
-
-  guest_context->gp_regs->dx = tsc.HighPart;
-  guest_context->gp_regs->ax = tsc.LowPart;
-  guest_context->gp_regs->cx = tsc_aux;
-
-  VmmpAdjustGuestInstructionPointer(guest_context);
-}
 
 // XSETBV. It is executed at the time of system resuming
 _Use_decl_annotations_ static void VmmpHandleXsetbv(
@@ -503,17 +464,7 @@ _Use_decl_annotations_ static void VmmpHandleMsrReadAccess(
     GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
   
-  const auto msr = static_cast<Msr>(guest_context->gp_regs->cx);
-
-  // VMX MSR Leakage prevention
-  if (msr == Msr::kIa32FeatureControl || msr == Msr::kIa32VmxBasic) {
-    // Return 0 for these MSRs to hide VMX capability from the guest
-    guest_context->gp_regs->ax = 0;
-    guest_context->gp_regs->dx = 0;
-    VmmpAdjustGuestInstructionPointer(guest_context);
-    return;
-  }
-
+  // Directly pass MSR reads to the guest or VMCS layout
   VmmpHandleMsrAccess(guest_context, true);
 }
 
@@ -1240,8 +1191,10 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
   if (!UtilIsInBounds(hypercall_number,
                       HypercallNumber::kMinimumHypercallNumber,
                       HypercallNumber::kMaximumHypercallNumber)) {
-    // Unsupported hypercall
-    VmmpIndicateUnsuccessfulVmcall(guest_context);
+    // Unsupported hypercall: Forward to underlying hypervisor (Hyper-V/VBS)
+    AsmForwardVmcall(guest_context->gp_regs);
+    VmmpIndicateSuccessfulVmcall(guest_context);
+    return;
   }
 
   switch (hypercall_number) {
@@ -1250,7 +1203,9 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
       if (VmmpGetGuestCpl() == 0) {
         VmmpHandleVmCallTermination(guest_context, context);
       } else {
-        VmmpIndicateUnsuccessfulVmcall(guest_context);
+        // Forward to underlying hypervisor if not from Kernel
+        AsmForwardVmcall(guest_context->gp_regs);
+        VmmpIndicateSuccessfulVmcall(guest_context);
       }
       break;
     case HypercallNumber::kPingVmm:
@@ -1275,7 +1230,8 @@ _Use_decl_annotations_ static void VmmpHandleSharedBuffer(
     GuestContext *guest_context) {
   UNREFERENCED_PARAMETER(guest_context);
   // Get pointer to the shared buffer page in hypervisor's virtual memory
-  auto shared_page = static_cast<SharedBufferPage*>(UtilVaFromPa(SHARED_BUFFER_PHYSICAL_ADDRESS));
+  extern UINT64 g_SharedBufferPhysicalAddress;
+  auto shared_page = static_cast<SharedBufferPage*>(UtilVaFromPa(g_SharedBufferPhysicalAddress));
   if (!shared_page) return;
 
   // Process the request

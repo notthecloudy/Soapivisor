@@ -142,6 +142,10 @@ unsigned char __stdcall AsmInvvpid(
     _In_ InvVpidType invvpid_type,
     _In_ const InvVpidDescriptor *invvpid_descriptor);
 
+/// Forwards VMCALL to underlying hypervisor seamlessly
+/// @param regs A pointer to guest's GpRegisters
+void __stdcall AsmForwardVmcall(_Inout_ GpRegisters *regs);
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // variables

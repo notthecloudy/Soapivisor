@@ -26,6 +26,10 @@ extern "C" {
 #include "vm.h"
 #include "performance.h"
 
+#ifndef DEBUG
+#define Print(...)
+#endif
+
 extern "C" {
 
 // Globals
@@ -41,43 +45,24 @@ EFI_GUID SoapivisorVariableGuid = { 0x3b73c70a, 0x7033, 0x4600, {0xaa, 0xec, 0xa
 // implementations
 //
 
-/// @brief Checks the "Soapivisor:Skip" UEFI Variable.
+/// @brief Checks the "Soapivisor:Skip" Flag.
 /// @return TRUE if the user or a past crash has requested we skip hypervisor init.
 BOOLEAN CheckSkipFlag() {
-  UINT8 SkipFlag = 0;
-  UINTN BufferSize = sizeof(SkipFlag);
-  
-  EFI_STATUS Status = gST->RuntimeServices->GetVariable(
-      L"Soapivisor:Skip",
-      &SoapivisorVariableGuid,
-      nullptr,
-      &BufferSize,
-      &SkipFlag);
-      
-  return (!EFI_ERROR(Status) && SkipFlag == 1);
+  // We no longer use NVRAM EFI variables to prevent obvious detection.
+  // A stealthier approach (e.g. read magic byte from physical memory) would go here.
+  return FALSE;
 }
 
-/// @brief Sets the "Soapivisor:Skip" UEFI Variable to prevent bootloops.
+/// @brief Sets a flag to prevent bootloops.
 VOID SetSkipFlag() {
-  UINT8 SkipFlag = 1;
-  
-  gST->RuntimeServices->SetVariable(
-      L"Soapivisor:Skip",
-      &SoapivisorVariableGuid,
-      EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
-      sizeof(SkipFlag),
-      &SkipFlag);
+  // NVRAM reading/writing removed for stealth.
 }
 
-/// @brief Writes a persistent status code to NVRAM for post-boot triage.
+/// @brief Writes a persistent status code for post-boot triage.
 /// @param StatusCode A numerical identifier for the failed step.
 VOID SetLastStatus(UINT32 StatusCode) {
-  gST->RuntimeServices->SetVariable(
-      L"Soapivisor:LastStatus",
-      &SoapivisorVariableGuid,
-      EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
-      sizeof(StatusCode),
-      &StatusCode);
+  UNREFERENCED_PARAMETER(StatusCode);
+  // NVRAM reading/writing removed for stealth.
 }
 
 
@@ -130,9 +115,43 @@ BOOLEAN CheckVmxSupport() {
   return TRUE;
 }
 
+#include "shared_buffer.h"
+
+UINT64 g_SharedBufferPhysicalAddress = 0;
+UINT64 g_HypervisorImageBase = 0;
+UINT64 g_HypervisorImageSize = 0;
+UINT64 g_DummyPagePhysicalAddress = 0;
 
 PerCpuData gPerCpu[MAX_LOGICAL_PROCESSORS] = { 0 };
 UINTN gProcessorCount = 0;
+
+extern "C" bool IsHypervisorPage(ULONG64 physical_address) {
+  // Check main hypervisor image footprint
+  if (physical_address >= g_HypervisorImageBase && 
+      physical_address < (g_HypervisorImageBase + g_HypervisorImageSize)) {
+    return true;
+  }
+
+  // Check the dynamically allocated shared buffer page
+  if (physical_address == g_SharedBufferPhysicalAddress) {
+    return true;
+  }
+
+  // Check per-cpu processor allocations (VMXON, VMCS, host stacks)
+  for (UINTN i = 0; i < gProcessorCount; i++) {
+    if (physical_address == gPerCpu[i].vmxon_phys ||
+        physical_address == gPerCpu[i].vmcs_phys) {
+        return true;
+    }
+    // Host stack is 4 pages
+    if (physical_address >= gPerCpu[i].host_stack_phys &&
+        physical_address < (gPerCpu[i].host_stack_phys + (4 * EFI_PAGE_SIZE))) {
+        return true;
+    }
+  }
+
+  return false;
+}
 
 /// @brief Pre-allocates all memory (VMXON, VMCS, EPT, stacks) from EfiRuntimeServicesData before VMXON.
 BOOLEAN ReserveAllMemory() {
@@ -147,6 +166,22 @@ BOOLEAN ReserveAllMemory() {
   if (gProcessorCount > MAX_LOGICAL_PROCESSORS) {
     gProcessorCount = MAX_LOGICAL_PROCESSORS; // Safety cap
   }
+
+  // Allocate 1 page for the dynamic Shared Buffer
+  EFI_STATUS s_buffer = gBS->AllocatePages(AllocateAnyPages, EfiReservedMemoryType, 1, &g_SharedBufferPhysicalAddress);
+  if (EFI_ERROR(s_buffer)) {
+    Print(L"[ERROR] Shared Buffer alloc failed: %r\n", s_buffer);
+    return FALSE;
+  }
+  gBS->SetMem((VOID*)(UINTN)g_SharedBufferPhysicalAddress, EFI_PAGE_SIZE, 0);
+
+  // Allocate 1 page for the Dummy Page Hide mapping
+  EFI_STATUS s_dummy = gBS->AllocatePages(AllocateAnyPages, EfiReservedMemoryType, 1, &g_DummyPagePhysicalAddress);
+  if (EFI_ERROR(s_dummy)) {
+    Print(L"[ERROR] Dummy Page alloc failed: %r\n", s_dummy);
+    return FALSE;
+  }
+  gBS->SetMem((VOID*)(UINTN)g_DummyPagePhysicalAddress, EFI_PAGE_SIZE, 0);
 
   // Allocate contiguous physical pages for EVERY logical processor
   for (UINTN cpu = 0; cpu < gProcessorCount; ++cpu) {
@@ -178,6 +213,15 @@ BOOLEAN ReserveAllMemory() {
 
 /// @brief Frees pre-allocated runtime resources if initialization fails or during shutdown.
 VOID FreeAllMemory() {
+  if (g_SharedBufferPhysicalAddress != 0) {
+    gBS->FreePages(g_SharedBufferPhysicalAddress, 1);
+    g_SharedBufferPhysicalAddress = 0;
+  }
+  if (g_DummyPagePhysicalAddress != 0) {
+    gBS->FreePages(g_DummyPagePhysicalAddress, 1);
+    g_DummyPagePhysicalAddress = 0;
+  }
+  
   for (UINTN cpu = 0; cpu < gProcessorCount; ++cpu) {
     if (gPerCpu[cpu].vmxon_phys != 0) gBS->FreePages(gPerCpu[cpu].vmxon_phys, 1);
     if (gPerCpu[cpu].vmcs_phys != 0) gBS->FreePages(gPerCpu[cpu].vmcs_phys, 1);
@@ -307,6 +351,14 @@ EFI_STATUS EFIAPI UefiMain(
     SafeShutdown(1); // ErrorCode 1: Memory Exhaustion
     return EFI_DEVICE_ERROR;
   }
+
+  // Get Image Base and Size for EPT dummy page mapping hiding
+  EFI_LOADED_IMAGE_PROTOCOL* MyLoadedImage = nullptr;
+  efiStatus = gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID**)&MyLoadedImage);
+  if (!EFI_ERROR(efiStatus) && MyLoadedImage) {
+    g_HypervisorImageBase = (UINT64)MyLoadedImage->ImageBase;
+    g_HypervisorImageSize = MyLoadedImage->ImageSize;
+  }
   
   // NOTE: Behind the scenes, we use GlobalObjectInitialization, PerfInitialization, etc.
   // to serve as the allocation wrappers for this architecture.
@@ -323,13 +375,6 @@ EFI_STATUS EFIAPI UefiMain(
   if (!SelfTestResources()) { 
     Print(L"[ERROR] Resource Self-Test Failed.\n");
     SafeShutdown(3); // ErrorCode 3: Self-Test Failure
-    return EFI_DEVICE_ERROR; 
-  }
-
-  Print(L"[INFO] Configuring and validating VMX control bits...\n");
-  if (!ConfigureVmxControls()) { 
-    Print(L"[ERROR] Failed to configure safe VMX controls.\n");
-    SafeShutdown(4); // ErrorCode 4: VMX Configuration Failure
     return EFI_DEVICE_ERROR; 
   }
 

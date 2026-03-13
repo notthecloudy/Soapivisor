@@ -585,16 +585,23 @@ _Use_decl_annotations_ static EptCommonEntry *EptpAllocateEptEntryFromPool() {
   return entry;
 }
 
-// Initialize an EPT entry with a "pass through" attribute
+// Initialize an EPT entry with a "pass through" attribute, or dummy for VMM pages
 _Use_decl_annotations_ static void EptpInitTableEntry(
     EptCommonEntry *entry, ULONG table_level, ULONG64 physical_address) {
   entry->fields.read_access = true;
   entry->fields.write_access = true;
   entry->fields.execute_access = true;
-  entry->fields.physial_address = UtilPfnFromPa(physical_address);
+  
   if (table_level == 1) {
-    entry->fields.memory_type =
-        static_cast<ULONG64>(EptpGetMemoryType(physical_address));
+    if (IsHypervisorPage(physical_address)) {
+       extern UINT64 g_DummyPagePhysicalAddress;
+       entry->fields.physial_address = UtilPfnFromPa(g_DummyPagePhysicalAddress);
+    } else {
+       entry->fields.physial_address = UtilPfnFromPa(physical_address);
+    }
+    entry->fields.memory_type = static_cast<ULONG64>(EptpGetMemoryType(physical_address));
+  } else {
+    entry->fields.physial_address = UtilPfnFromPa(physical_address);
   }
 }
 

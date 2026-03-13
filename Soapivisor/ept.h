@@ -8,7 +8,7 @@
 #ifndef Soapivisor_EPT_H_
 #define Soapivisor_EPT_H_
 
-#include <ntddk.h>
+#include "common.h"
 
 extern "C" {
 ////////////////////////////////////////////////////////////////////////////////

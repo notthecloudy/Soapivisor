@@ -2,10 +2,9 @@
 
 #include <stdint.h>
 
-// Use a fixed physical address for the shared buffer for simplicity.
-// The user mode application will map this physical address to read/write.
-// We use a high physical address that is typically RAM but can be reserved.
-#define SHARED_BUFFER_PHYSICAL_ADDRESS 0x7E000000 // Example: ~2GB mark
+// The hypervisor dynamically allocates this address in EfiReservedMemoryType 
+// and exposes it to usermode via CPUID leaf 0x77777777.
+extern UINT64 g_SharedBufferPhysicalAddress;
 
 struct HvRequest {
     uint32_t request_id;

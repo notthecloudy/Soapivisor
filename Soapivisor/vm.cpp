@@ -278,35 +278,25 @@ _Use_decl_annotations_ static void *VmpBuildMsrBitmap() {
   }
   RtlZeroMemory(msr_bitmap, PAGE_SIZE);
 
-  // Activate VM-exit for RDMSR against all MSRs
+  // Setup low read and write bitmaps
   const auto bitmap_read_low = static_cast<UCHAR *>(msr_bitmap);
-  const auto bitmap_read_high = bitmap_read_low + 1024;
-  RtlFillMemory(bitmap_read_low, 1024, 0xff);   // read        0 -     1fff
-  RtlFillMemory(bitmap_read_high, 1024, 0xff);  // read c0000000 - c0001fff
+  const auto bitmap_write_low = static_cast<UCHAR *>(msr_bitmap) + 2048;
 
-  // Ignore IA32_MPERF (000000e7) and IA32_APERF (000000e8)
   RTL_BITMAP bitmap_read_low_header = {};
-  RtlInitializeBitMap(&bitmap_read_low_header,
-                      reinterpret_cast<PULONG>(bitmap_read_low), 1024 * 8);
-  RtlClearBits(&bitmap_read_low_header, 0xe7, 2);
+  RtlInitializeBitMap(&bitmap_read_low_header, reinterpret_cast<PULONG>(bitmap_read_low), 1024 * CHAR_BIT);
 
-  // Checks MSRs that cause #GP from 0 to 0xfff, and ignore all of them
-  for (auto msr = 0ul; msr < 0x1000; ++msr) {
-    __try {
-      UtilReadMsr(static_cast<Msr>(msr));
+  RTL_BITMAP bitmap_write_low_header = {};
+  RtlInitializeBitMap(&bitmap_write_low_header, reinterpret_cast<PULONG>(bitmap_write_low), 1024 * CHAR_BIT);
 
-#pragma prefast(suppress : __WARNING_EXCEPTIONEXECUTEHANDLER, "Catch all.");
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-      RtlClearBits(&bitmap_read_low_header, msr, 1);
-    }
+  // Intercept VMX Feature Control (0x3A)
+  RtlSetBits(&bitmap_read_low_header, static_cast<ULONG>(Msr::kIa32FeatureControl), 1);
+  RtlSetBits(&bitmap_write_low_header, static_cast<ULONG>(Msr::kIa32FeatureControl), 1);
+
+  // Intercept VMX MSRs (0x480 - 0x491)
+  for (ULONG msr = static_cast<ULONG>(Msr::kIa32VmxBasic); msr <= static_cast<ULONG>(Msr::kIa32VmxVmfunc); msr++) {
+    RtlSetBits(&bitmap_read_low_header, msr, 1);
+    RtlSetBits(&bitmap_write_low_header, msr, 1);
   }
-
-  // Ignore IA32_GS_BASE (c0000101) and IA32_KERNEL_GS_BASE (c0000102)
-  RTL_BITMAP bitmap_read_high_header = {};
-  RtlInitializeBitMap(&bitmap_read_high_header,
-                      reinterpret_cast<PULONG>(bitmap_read_high),
-                      1024 * CHAR_BIT);
-  RtlClearBits(&bitmap_read_high_header, 0x101, 2);
 
   return msr_bitmap;
 }
@@ -628,6 +618,7 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
   vm_procctl_requested.fields.use_io_bitmaps = true;
   vm_procctl_requested.fields.use_msr_bitmaps = true;
   vm_procctl_requested.fields.activate_secondary_control = true;
+  vm_procctl_requested.fields.use_tsc_offsetting = true;
   VmxProcessorBasedControls vm_procctl = {
       VmpAdjustControlValue((use_true_msrs) ? Msr::kIa32VmxTrueProcBasedCtls
                                             : Msr::kIa32VmxProcBasedCtls,
@@ -720,6 +711,9 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
   error |= UtilVmWrite64(VmcsField::kIoBitmapB, UtilPaFromVa(processor_data->shared_data->io_bitmap_b));
   error |= UtilVmWrite64(VmcsField::kMsrBitmap, UtilPaFromVa(processor_data->shared_data->msr_bitmap));
   error |= UtilVmWrite64(VmcsField::kEptPointer, EptGetEptPointer(processor_data->ept_data));
+  
+  // Offset the guest TSC by a negative amount to hide VM-exit latency
+  error |= UtilVmWrite64(VmcsField::kTscOffset, static_cast<ULONG64>(-750));
 
   /* 64-Bit Guest-State Fields */
   error |= UtilVmWrite64(VmcsField::kVmcsLinkPointer, MAXULONG64);
@@ -1020,17 +1014,15 @@ _Use_decl_annotations_ static void VmpFreeSharedData(
 
 // Tests if Soapivisor is already installed
 _Use_decl_annotations_ static bool VmpIsSoapivisorInstalled() {
-  PAGED_CODE()
+  int cpu_info[4] = {-1, -1, -1, -1};
+  __cpuidex(cpu_info, 0x77777777, 0);
 
-  int cpu_info[4] = {};
-  __cpuid(cpu_info, 1);
-  const CpuFeaturesEcx cpu_features = {static_cast<ULONG32>(cpu_info[2])};
-  if (!cpu_features.fields.not_used) {
-    return false;
+  // If Soapivisor is installed, it returns the shared buffer physical address in eax/ebx,
+  // and perfectly zero in ecx/edx. It avoids using any static ASCII signatures.
+  if (cpu_info[2] == 0 && cpu_info[3] == 0 && (cpu_info[0] != 0 || cpu_info[1] != 0)) {
+    return true;
   }
-
-  __cpuid(cpu_info, kHyperVCpuidInterface);
-  return cpu_info[0] == 'PpyH';
+  return false;
 }
 
 // Virtualizes the specified processor

@@ -14,7 +14,7 @@
 #ifndef Soapivisor_PERF_COUNTER_H_
 #define Soapivisor_PERF_COUNTER_H_
 
-#include <ntddk.h>
+#include "common.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 //

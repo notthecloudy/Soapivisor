@@ -8,7 +8,7 @@
 #ifndef Soapivisor_VM_H_
 #define Soapivisor_VM_H_
 
-#include <ntddk.h>
+#include "common.h"
 
 extern "C" {
 ////////////////////////////////////////////////////////////////////////////////

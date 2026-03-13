@@ -8,7 +8,7 @@
 #ifndef Soapivisor_IA32_TYPE_H_
 #define Soapivisor_IA32_TYPE_H_
 
-#include <ntddk.h>
+#include "common.h"
 
 // clang does not know about the @copydoc command.
 // https://bugs.llvm.org/show_bug.cgi?id=17437

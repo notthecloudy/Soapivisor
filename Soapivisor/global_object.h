@@ -8,7 +8,7 @@
 #ifndef Soapivisor_GLOBAL_OBJECT_H_
 #define Soapivisor_GLOBAL_OBJECT_H_
 
-#include <ntddk.h>
+#include "common.h"
 
 extern "C" {
 ////////////////////////////////////////////////////////////////////////////////

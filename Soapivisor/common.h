@@ -35,7 +35,10 @@
 #ifndef Soapivisor_COMMON_H_
 #define Soapivisor_COMMON_H_
 
-#include <ntddk.h>
+#include <Uefi.h>
+#include <Library/UefiLib.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 
 // C30030: Calling a memory allocating function and passing a parameter that
 // indicates executable memory
@@ -52,29 +55,13 @@
 
 /// Sets a break point that works only when a debugger is present
 #if !defined(Soapivisor_COMMON_DBG_BREAK)
-#define Soapivisor_COMMON_DBG_BREAK() \
-  if (KD_DEBUGGER_NOT_PRESENT) {         \
-  } else {                               \
-    __debugbreak();                      \
-  }                                      \
-  reinterpret_cast<void*>(0)
+#define Soapivisor_COMMON_DBG_BREAK() 
 #endif
 
-/// Issues a bug check
-/// @param hp_bug_check_code  Type of a bug
-/// @param param1   1st parameter for KeBugCheckEx()
-/// @param param2   2nd parameter for KeBugCheckEx()
-/// @param param3   3rd parameter for KeBugCheckEx()
+/// Issues a bug check (For UEFI, we just hang to preserve state or optionally reset)
 #if !defined(Soapivisor_COMMON_BUG_CHECK)
-#define Soapivisor_COMMON_BUG_CHECK(hp_bug_check_code, param1, param2,    \
-                                       param3)                               \
-  Soapivisor_COMMON_DBG_BREAK();                                          \
-  const SoapivisorBugCheck code = (hp_bug_check_code);                    \
-  __pragma(warning(push))                                                    \
-  __pragma(warning(disable: __WARNING_USE_OTHER_FUNCTION))                   \
-  KeBugCheckEx(MANUALLY_INITIATED_CRASH, static_cast<ULONG>(code), (param1), \
-               (param2), (param3))                                           \
-  __pragma(warning(pop))
+#define Soapivisor_COMMON_BUG_CHECK(hp_bug_check_code, param1, param2, param3) \
+  while (true) {}
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -89,8 +76,15 @@
 /// negative performance impact.
 #define Soapivisor_PERFORMANCE_ENABLE_PERFCOUNTER 0
 
-/// A pool tag
-static constexpr ULONG kSoapivisorCommonPoolTag = 'PpyH';
+/// A pool tag (Randomized at compile time to avoid signature scanning)
+constexpr ULONG CompileTimeHash(const char* str) {
+    ULONG hash = 5381;
+    for (int i = 0; str[i] != '\0'; ++i) {
+        hash = ((hash << 5) + hash) + str[i];
+    }
+    return hash;
+}
+static constexpr ULONG kSoapivisorCommonPoolTag = CompileTimeHash(__TIME__);
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -142,5 +136,6 @@ constexpr bool IsReleaseBuild() {
   return true;
 #endif
 }
+extern "C" bool IsHypervisorPage(ULONG64 physical_address);
 
 #endif  // Soapivisor_COMMON_H_
