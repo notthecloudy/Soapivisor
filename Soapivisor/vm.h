@@ -31,6 +31,18 @@ extern "C" {
 // prototypes
 //
 
+#define MAX_LOGICAL_PROCESSORS 256
+
+struct PerCpuData {
+  ULONG64 vmxon_phys;
+  void*   vmxon_virt;
+  ULONG64 vmcs_phys;
+  void*   vmcs_virt;
+  ULONG64 host_stack_phys;
+  void*   host_stack_virt;
+  bool    init_ok;
+};
+
 /// Virtualizes all processors
 /// @return STATUS_SUCCESS on success
 ///
@@ -38,7 +50,7 @@ extern "C" {
 /// operation mode) for each processor. Returns non STATUS_SUCCESS value if any
 /// of processors failed to do so. In that case, this function de-virtualize
 /// already virtualized processors.
-_IRQL_requires_max_(PASSIVE_LEVEL) NTSTATUS VmInitialization();
+_IRQL_requires_max_(PASSIVE_LEVEL) NTSTATUS VmInitialization(PerCpuData* cpu_data);
 
 /// De-virtualize all processors
 _IRQL_requires_max_(PASSIVE_LEVEL) void VmTermination();

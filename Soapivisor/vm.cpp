@@ -139,8 +139,11 @@ inline ULONG GetSegmentLimit(_In_ ULONG selector) {
 }
 #endif
 
+// Global shared data for all processors
+static SharedProcessorData* g_SharedData = nullptr;
+
 // Checks if a VMM can be installed, and so, installs it
-_Use_decl_annotations_ NTSTATUS VmInitialization() {
+_Use_decl_annotations_ NTSTATUS VmInitialization(PerCpuData* cpu_data) {
   PAGED_CODE()
 
   if (VmpIsSoapivisorInstalled()) {
@@ -151,20 +154,19 @@ _Use_decl_annotations_ NTSTATUS VmInitialization() {
     return STATUS_HV_FEATURE_UNAVAILABLE;
   }
 
-  const auto shared_data = VmpInitializeSharedData();
-  if (!shared_data) {
-    return STATUS_MEMORY_NOT_ALLOCATED;
+  // Globally initialize shared data on the first CPU that executes this
+  if (!g_SharedData) {
+      g_SharedData = VmpInitializeSharedData();
+      if (!g_SharedData) {
+          return STATUS_MEMORY_NOT_ALLOCATED;
+      }
+      
+      // Read and store all MTRRs to set a correct memory type for EPT
+      EptInitializeMtrrEntries();
   }
 
-  // Read and store all MTRRs to set a correct memory type for EPT
-  EptInitializeMtrrEntries();
-
-  // Virtualize all processors
-  auto status = UtilForEachProcessor(VmpStartVm, shared_data);
-  if (!NT_SUCCESS(status)) {
-    UtilForEachProcessor(VmpStopVm, nullptr);
-    return status;
-  }
+  // Virtualize the current processor using the externally allocated PerCpuData
+  auto status = VmpStartVm(cpu_data);
   return status;
 }
 
@@ -360,7 +362,12 @@ _Use_decl_annotations_ static void VmpInitializeVm(
     void *context) {
   PAGED_CODE()
 
-  const auto shared_data = static_cast<SharedProcessorData *>(context);
+  const auto cpu_data = static_cast<PerCpuData *>(context);
+  if (!cpu_data) {
+    return;
+  }
+
+  const auto shared_data = g_SharedData;
   if (!shared_data) {
     return;
   }
@@ -382,32 +389,26 @@ _Use_decl_annotations_ static void VmpInitializeVm(
     return;
   }
 
-  // Allocate other processor data fields
-  processor_data->vmm_stack_limit =
-      UtilAllocateContiguousMemory(KERNEL_STACK_SIZE);
+  // Use externally allocated processor data fields
+  processor_data->vmm_stack_limit = cpu_data->host_stack_virt;
   if (!processor_data->vmm_stack_limit) {
     VmpFreeProcessorData(processor_data);
     return;
   }
-  RtlZeroMemory(processor_data->vmm_stack_limit, KERNEL_STACK_SIZE);
 
   processor_data->vmcs_region =
-      static_cast<VmControlStructure *>(ExAllocatePoolZero(
-          NonPagedPool, kVmxMaxVmcsSize, kSoapivisorCommonPoolTag));
+      static_cast<VmControlStructure *>(cpu_data->vmcs_virt);
   if (!processor_data->vmcs_region) {
     VmpFreeProcessorData(processor_data);
     return;
   }
-  RtlZeroMemory(processor_data->vmcs_region, kVmxMaxVmcsSize);
 
   processor_data->vmxon_region =
-      static_cast<VmControlStructure *>(ExAllocatePoolZero(
-          NonPagedPool, kVmxMaxVmcsSize, kSoapivisorCommonPoolTag));
+      static_cast<VmControlStructure *>(cpu_data->vmxon_virt);
   if (!processor_data->vmxon_region) {
     VmpFreeProcessorData(processor_data);
     return;
   }
-  RtlZeroMemory(processor_data->vmxon_region, kVmxMaxVmcsSize);
 
   // Initialize stack memory for VMM looks like this:
   //
@@ -976,16 +977,12 @@ _Use_decl_annotations_ static void VmpFreeProcessorData(
   if (!processor_data) {
     return;
   }
-  if (processor_data->vmm_stack_limit) {
-    UtilFreeContiguousMemory(processor_data->vmm_stack_limit);
-  }
-  if (processor_data->vmcs_region) {
-    ExFreePoolWithTag(processor_data->vmcs_region, kSoapivisorCommonPoolTag);
-  }
-  if (processor_data->vmxon_region) {
-    ExFreePoolWithTag(processor_data->vmxon_region,
-                      kSoapivisorCommonPoolTag);
-  }
+  // The following memory regions are pre-allocated by UEFI in driver.cpp,
+  // so we do not free them here.
+  // vmm_stack_limit
+  // vmcs_region
+  // vmxon_region
+
   if (processor_data->ept_data) {
     EptTermination(processor_data->ept_data);
   }

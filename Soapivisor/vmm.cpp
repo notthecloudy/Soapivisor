@@ -13,6 +13,7 @@
 #include "log.h"
 #include "util.h"
 #include "performance.h"
+#include "shared_buffer.h"
 
 extern "C" {
 ////////////////////////////////////////////////////////////////////////////////
@@ -154,6 +155,8 @@ static void VmmpHandleVmCallTermination(_In_ GuestContext *guest_context,
                                         _Inout_ void *context);
 
 static UCHAR VmmpGetGuestCpl();
+
+static void VmmpHandleSharedBuffer(_Inout_ GuestContext *guest_context);
 
 static void VmmpInjectInterruption(_In_ InterruptionType interruption_type,
                                    _In_ InterruptionVector vector,
@@ -427,13 +430,16 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
   __cpuidex(reinterpret_cast<int *>(cpu_info), function_id, sub_function_id);
 
   if (function_id == 1) {
-    // Present existence of a hypervisor using the HypervisorPresent bit
+    // Hide hypervisor presence (Clear CPUID.1:ECX[31])
     CpuFeaturesEcx cpu_features = {static_cast<ULONG32>(cpu_info[2])};
-    cpu_features.fields.not_used = true;
+    cpu_features.fields.not_used = false; // This is bit 31 (HypervisorPresent)
     cpu_info[2] = static_cast<int>(cpu_features.all);
   } else if (function_id == kHyperVCpuidInterface) {
-    // Leave signature of Soapivisor onto EAX
-    cpu_info[0] = 'PpyH';
+    // Return zeros to spoof Microsoft's Hv signature or blank it
+    cpu_info[0] = 0;
+    cpu_info[1] = 0;
+    cpu_info[2] = 0;
+    cpu_info[3] = 0;
   }
 
   guest_context->gp_regs->ax = cpu_info[0];
@@ -447,9 +453,15 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
 // RDTSC
 _Use_decl_annotations_ static void VmmpHandleRdtsc(
     GuestContext *guest_context) {
-  Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+  // Instead of performance measuring macro which adds overhead, just do it quickly
   ULARGE_INTEGER tsc = {};
   tsc.QuadPart = __rdtsc();
+  
+  // Spoof timing: subtract an approximate VM-exit cycle cost (e.g., 500-1000 cycles)
+  // to hide the time spent in this hypervisor handler.
+  const ULONG64 kVmExitOverhead = 750;
+  tsc.QuadPart -= kVmExitOverhead;
+
   guest_context->gp_regs->dx = tsc.HighPart;
   guest_context->gp_regs->ax = tsc.LowPart;
 
@@ -459,10 +471,14 @@ _Use_decl_annotations_ static void VmmpHandleRdtsc(
 // RDTSCP
 _Use_decl_annotations_ static void VmmpHandleRdtscp(
     GuestContext *guest_context) {
-  Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
   unsigned int tsc_aux = 0;
   ULARGE_INTEGER tsc = {};
   tsc.QuadPart = __rdtscp(&tsc_aux);
+  
+  // Spoof timing: subtract an approximate VM-exit cycle cost
+  const ULONG64 kVmExitOverhead = 750;
+  tsc.QuadPart -= kVmExitOverhead;
+
   guest_context->gp_regs->dx = tsc.HighPart;
   guest_context->gp_regs->ax = tsc.LowPart;
   guest_context->gp_regs->cx = tsc_aux;
@@ -486,6 +502,18 @@ _Use_decl_annotations_ static void VmmpHandleXsetbv(
 _Use_decl_annotations_ static void VmmpHandleMsrReadAccess(
     GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+  
+  const auto msr = static_cast<Msr>(guest_context->gp_regs->cx);
+
+  // VMX MSR Leakage prevention
+  if (msr == Msr::kIa32FeatureControl || msr == Msr::kIa32VmxBasic) {
+    // Return 0 for these MSRs to hide VMX capability from the guest
+    guest_context->gp_regs->ax = 0;
+    guest_context->gp_regs->dx = 0;
+    VmmpAdjustGuestInstructionPointer(guest_context);
+    return;
+  }
+
   VmmpHandleMsrAccess(guest_context, true);
 }
 
@@ -1235,6 +1263,38 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
           guest_context->stack->processor_data->shared_data;
       VmmpIndicateSuccessfulVmcall(guest_context);
       break;
+    case HypercallNumber::kProcessSharedBuffer:
+      VmmpHandleSharedBuffer(guest_context);
+      VmmpIndicateSuccessfulVmcall(guest_context);
+      break;
+  }
+}
+
+// Handles real-time physical memory reads via the Shared Buffer
+_Use_decl_annotations_ static void VmmpHandleSharedBuffer(
+    GuestContext *guest_context) {
+  UNREFERENCED_PARAMETER(guest_context);
+  // Get pointer to the shared buffer page in hypervisor's virtual memory
+  auto shared_page = static_cast<SharedBufferPage*>(UtilVaFromPa(SHARED_BUFFER_PHYSICAL_ADDRESS));
+  if (!shared_page) return;
+
+  // Process the request
+  if (shared_page->request.request_id != shared_page->result.request_id && shared_page->request.request_id != 0) {
+    uint32_t count = shared_page->request.count;
+    if (count > 64) count = 64; // Bounds Check
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t paddr = shared_page->request.addresses[i];
+        void* va = UtilVaFromPa(paddr);
+        if (va) {
+            shared_page->result.values[i] = *static_cast<uint64_t*>(va);
+        } else {
+            shared_page->result.values[i] = 0;
+        }
+    }
+
+    // Signal completion
+    shared_page->result.request_id = shared_page->request.request_id;
   }
 }
 
