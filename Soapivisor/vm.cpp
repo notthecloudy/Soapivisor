@@ -1017,15 +1017,8 @@ _Use_decl_annotations_ static void VmpFreeSharedData(
 
 // Tests if Soapivisor is already installed
 _Use_decl_annotations_ static bool VmpIsSoapivisorInstalled() {
-  int cpu_info[4] = {-1, -1, -1, -1};
-  __cpuidex(cpu_info, 0x400000FF, 0);
-
-  // If Soapivisor is installed, it returns the shared buffer physical address in eax/ebx,
-  // and perfectly zero in ecx/edx. It avoids using any static ASCII signatures.
-  if (cpu_info[2] == 0 && cpu_info[3] == 0 && (cpu_info[0] != 0 || cpu_info[1] != 0)) {
-    return true;
-  }
-  return false;
+  // Use kPingVmm hypercall to detect ourselves instead of a detectable CPUID leaf.
+  return (UtilVmCall(HypercallNumber::kPingVmm, nullptr) == STATUS_SUCCESS);
 }
 
 // Virtualizes the specified processor

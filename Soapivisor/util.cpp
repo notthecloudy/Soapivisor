@@ -143,9 +143,16 @@ extern "C" void* ExAllocatePoolZero(POOL_TYPE PoolType, SIZE_T NumberOfBytes, UL
   UNREFERENCED_PARAMETER(PoolType);
   UNREFERENCED_PARAMETER(Tag);
   void* p = nullptr;
+  // Use EfiRuntimeServicesData instead of ReservedMemory to reduce fingerprinting
   EFI_STATUS status = gBS->AllocatePool(EfiRuntimeServicesData, NumberOfBytes, &p);
   if (EFI_ERROR(status)) return nullptr;
   memset(p, 0, NumberOfBytes);
+
+  // Register all allocated pages in the hypervisor registry for EPT hiding
+  const auto phys = reinterpret_cast<UINT64>(p);
+  for (UINT64 addr = phys; addr < phys + NumberOfBytes; addr += PAGE_SIZE) {
+    UtilRegisterHypervisorPage(addr);
+  }
   return p;
 }
 
@@ -245,13 +252,30 @@ _Use_decl_annotations_ static NTSTATUS UtilpInitializePageTableVariables() {
   return STATUS_SUCCESS;
 }
 
-// Terminates utility functions
-_Use_decl_annotations_ void UtilTermination() {
-  if (g_utilp_physical_memory_ranges) {
-    ExFreePoolWithTag(g_utilp_physical_memory_ranges,
-                      kSoapivisorCommonPoolTag);
+// Hypervisor page registry for EPT hiding
+static UINT64 g_HypervisorPages[4096]; // Store up to 4096 pages (16MB) - adjust as needed
+static volatile long g_HypervisorPageCount = 0;
+
+_Use_decl_annotations_ void UtilRegisterHypervisorPage(UINT64 physical_address) {
+  const auto pfn = UtilPfnFromPa(physical_address);
+  const auto index = InterlockedIncrement(&g_HypervisorPageCount) - 1;
+  if (index < 4096) {
+    g_HypervisorPages[index] = pfn;
   }
 }
+
+_Use_decl_annotations_ bool IsHypervisorPage(UINT64 physical_address) {
+  const auto pfn = UtilPfnFromPa(physical_address);
+  const auto count = g_HypervisorPageCount;
+  for (long i = 0; i < count && i < 4096; i++) {
+    if (g_HypervisorPages[i] == pfn) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Terminates utility functions
 
 
 
@@ -745,41 +769,9 @@ _Use_decl_annotations_ void UtilLoadPdptes(ULONG_PTR cr3_value) {
 _Use_decl_annotations_ NTSTATUS UtilForceCopyMemory(void *destination,
                                                     const void *source,
                                                     SIZE_T length) {
-  auto mdl = IoAllocateMdl(destination, static_cast<ULONG>(length), FALSE,
-                           FALSE, nullptr);
-  if (!mdl) {
-    return STATUS_INSUFFICIENT_RESOURCES;
-  }
-  MmBuildMdlForNonPagedPool(mdl);
-
-#pragma warning(push)
-#pragma warning(disable : 28145)
-  // Following MmMapLockedPagesSpecifyCache() call causes bug check in case
-  // you are using Driver Verifier. The reason is explained as followings:
-  //
-  // A driver must not try to create more than one system-address-space
-  // mapping for an MDL. Additionally, because an MDL that is built by the
-  // MmBuildMdlForNonPagedPool routine is already mapped to the system
-  // address space, a driver must not try to map this MDL into the system
-  // address space again by using the MmMapLockedPagesSpecifyCache routine.
-  // -- MSDN
-  //
-  // This flag modification hacks Driver Verifier's check and prevent leading
-  // bug check.
-  mdl->MdlFlags &= ~MDL_SOURCE_IS_NONPAGED_POOL;
-  mdl->MdlFlags |= MDL_PAGES_LOCKED;
-#pragma warning(pop)
-
-  const auto writable_dest =
-      MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmCached, nullptr, FALSE,
-                                   NormalPagePriority | MdlMappingNoExecute);
-  if (!writable_dest) {
-    IoFreeMdl(mdl);
-    return STATUS_INSUFFICIENT_RESOURCES;
-  }
-  RtlCopyMemory(writable_dest, source, length);
-  MmUnmapLockedPages(writable_dest, mdl);
-  IoFreeMdl(mdl);
+  // In UEFI we assume identity mapping and no write-protection enforced by CR0.WP 
+  // yet for these areas. Simple memcpy is sufficient and kernel MDLs are non-existent.
+  memcpy(destination, source, length);
   return STATUS_SUCCESS;
 }
 

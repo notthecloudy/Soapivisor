@@ -73,6 +73,8 @@
 
 typedef ULONG KIRQL;
 inline KIRQL KeGetCurrentIrql() { return PASSIVE_LEVEL; }
+inline void KeRaiseIrqlToDpcLevel() { }
+inline void KeLowerIrql(KIRQL NewIrql) { UNREFERENCED_PARAMETER(NewIrql); }
 
 // Pool Types (for ExAllocatePoolZero compatibility)
 typedef enum _POOL_TYPE {

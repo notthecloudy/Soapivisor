@@ -186,13 +186,6 @@ static VmExitHistory g_vmmp_vm_exit_history[kVmmpNumberOfProcessors]
 #pragma warning(push)
 #pragma warning(disable : 28167)
 _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
-  // Save guest's context and raise IRQL as quick as possible
-  const auto guest_irql = KeGetCurrentIrql();
-  const auto guest_cr8 = IsX64() ? __readcr8() : 0;
-  if (guest_irql < DISPATCH_LEVEL) {
-    KeRaiseIrqlToDpcLevel();
-  }
-
   // Capture the current guest state
   GuestContext guest_context = {stack,
                                 UtilVmRead(VmcsField::kGuestRflags),
@@ -218,11 +211,6 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   if (!guest_context.vm_continue) {
     UtilInveptGlobal();
     UtilInvvpidAllContext();
-  }
-
-  // Restore guest's context
-  if (guest_context.irql < DISPATCH_LEVEL) {
-    KeLowerIrql(guest_context.irql);
   }
 
   // Apply possibly updated CR8 by the handler
@@ -435,19 +423,17 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
     CpuFeaturesEcx cpu_features = {static_cast<ULONG32>(cpu_info[2])};
     cpu_features.fields.not_used = false; // This is bit 31 (HypervisorPresent)
     cpu_info[2] = static_cast<int>(cpu_features.all);
-  } else if (function_id == kHyperVCpuidInterface) {
-    // Return zeros to spoof Microsoft's Hv signature or blank it
+  } else if (function_id >= 0x40000000 && function_id <= 0x400000FF) {
+    // Intercept hypervisor leaves. Report zeros or minimal info to avoid self-ID.
+    // If virtualization is expected (Hyper-V), we should pass through or spoof Microsoft.
     cpu_info[0] = 0;
     cpu_info[1] = 0;
     cpu_info[2] = 0;
     cpu_info[3] = 0;
-  } else if (function_id == 0x400000FF) {
-    // Expose dynamic shared buffer physical address to usermode caller
-    extern UINT64 g_SharedBufferPhysicalAddress;
-    cpu_info[0] = static_cast<int>(g_SharedBufferPhysicalAddress & 0xFFFFFFFF);
-    cpu_info[1] = static_cast<int>(g_SharedBufferPhysicalAddress >> 32);
-    cpu_info[2] = 0;
-    cpu_info[3] = 0;
+    if (function_id == 0x40000000) {
+      // Return 0x40000000 as max leaf to indicate no hypervisor interface here.
+      cpu_info[0] = 0x40000000;
+    }
   }
 
   guest_context->gp_regs->ax = cpu_info[0];
@@ -1547,26 +1533,8 @@ _Use_decl_annotations_ static void VmmpInjectInterruption(
 
 // Returns a kernel CR3 value of the current process;
 /*_Use_decl_annotations_*/ static ULONG_PTR VmmpGetKernelCr3() {
-  ULONG_PTR guest_cr3 = 0;
-  static const long kDirectoryTableBaseOffset = IsX64() ? 0x28 : 0x18;
-  if (IsX64()) {
-    // On x64, assume it is an user-mode CR3 when the lowest bit is set. If so,
-    // get CR3 from _KPROCESS::DirectoryTableBase.
-    guest_cr3 = UtilVmRead(VmcsField::kGuestCr3);
-    if (guest_cr3 & 1) {
-      const auto process = reinterpret_cast<PUCHAR>(PsGetCurrentProcess());
-      guest_cr3 =
-          *reinterpret_cast<PULONG_PTR>(process + kDirectoryTableBaseOffset);
-    }
-  } else {
-    // On x86, there is no easy way to tell whether the CR3 taken from VMCS is
-    // a user-mode CR3 or kernel-mode CR3 by only looking at the value.
-    // Therefore, we simply use _KPROCESS::DirectoryTableBase always.
-    const auto process = reinterpret_cast<PUCHAR>(PsGetCurrentProcess());
-    guest_cr3 =
-        *reinterpret_cast<PULONG_PTR>(process + kDirectoryTableBaseOffset);
-  }
-  return guest_cr3;
+  // In UEFI, there is only one address space. We just return the guest's CR3.
+  return UtilVmRead(VmcsField::kGuestCr3);
 }
 
 }  // extern "C"

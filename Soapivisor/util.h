@@ -282,6 +282,12 @@ _IRQL_requires_max_(DISPATCH_LEVEL) NTSTATUS
     UtilForceCopyMemory(_In_ void *destination, _In_ const void *source,
                         _In_ SIZE_T length);
 
+/// Registers a physical page as belonging to the hypervisor
+void UtilRegisterHypervisorPage(UINT64 physical_address);
+
+/// Checks if a physical page belongs to the hypervisor
+bool IsHypervisorPage(UINT64 physical_address);
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // variables
