@@ -9,8 +9,12 @@
 #include "util.h"
 #include <intrin.h>
 #include "asm.h"
-#include "common.h"
 #include "log.h"
+
+extern "C" {
+extern EFI_BOOT_SERVICES* gBS;
+extern EFI_MP_SERVICES_PROTOCOL* gMpServices;
+}
 
 extern "C" {
 ////////////////////////////////////////////////////////////////////////////////
@@ -134,29 +138,89 @@ static HardwarePte *UtilpAddressToPte(_In_ const void *address);
 // variables
 //
 
-static RtlPcToFileHeaderType *g_utilp_RtlPcToFileHeader;
+// Memory allocation implementation for UEFI
+extern "C" void* ExAllocatePoolZero(POOL_TYPE PoolType, SIZE_T NumberOfBytes, ULONG Tag) {
+  UNREFERENCED_PARAMETER(PoolType);
+  UNREFERENCED_PARAMETER(Tag);
+  void* p = nullptr;
+  EFI_STATUS status = gBS->AllocatePool(EfiRuntimeServicesData, NumberOfBytes, &p);
+  if (EFI_ERROR(status)) return nullptr;
+  memset(p, 0, NumberOfBytes);
+  return p;
+}
 
-static LIST_ENTRY *g_utilp_PsLoadedModuleList;
+extern "C" void ExFreePoolWithTag(void* P, ULONG Tag) {
+  UNREFERENCED_PARAMETER(Tag);
+  if (P) gBS->FreePool(P);
+}
 
-static PhysicalMemoryDescriptor *g_utilp_physical_memory_ranges;
+extern "C" PPHYSICAL_MEMORY_RANGE MmGetPhysicalMemoryRanges() {
+  UINTN MemoryMapSize = 0;
+  EFI_MEMORY_DESCRIPTOR* MemoryMap = nullptr;
+  UINTN MapKey = 0;
+  UINTN DescriptorSize = 0;
+  UINT32 DescriptorVersion = 0;
 
-static MmAllocateContiguousNodeMemoryType
-    *g_utilp_MmAllocateContiguousNodeMemory;
+  // Get map size
+  gBS->GetMemoryMap(&MemoryMapSize, nullptr, &MapKey, &DescriptorSize, &DescriptorVersion);
+  MemoryMapSize += 2 * DescriptorSize; // Buffer for growth
+  MemoryMap = (EFI_MEMORY_DESCRIPTOR*)ExAllocatePoolZero(NonPagedPool, MemoryMapSize, 0);
+  if (!MemoryMap) return nullptr;
 
+  EFI_STATUS status = gBS->GetMemoryMap(&MemoryMapSize, MemoryMap, &MapKey, &DescriptorSize, &DescriptorVersion);
+  if (EFI_ERROR(status)) {
+    ExFreePool(MemoryMap);
+    return nullptr;
+  }
+
+  UINTN DescriptorCount = MemoryMapSize / DescriptorSize;
+  UINTN RangeCount = 0;
+  for (UINTN i = 0; i < DescriptorCount; i++) {
+    EFI_MEMORY_DESCRIPTOR* desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)MemoryMap + i * DescriptorSize);
+    if (desc->Attribute & EFI_MEMORY_RUNTIME || desc->Type == EfiConventionalMemory || 
+        desc->Type == EfiLoaderCode || desc->Type == EfiLoaderData ||
+        desc->Type == EfiBootServicesCode || desc->Type == EfiBootServicesData) {
+      RangeCount++;
+    }
+  }
+
+  PPHYSICAL_MEMORY_RANGE Ranges = (PPHYSICAL_MEMORY_RANGE)ExAllocatePoolZero(NonPagedPool, sizeof(PHYSICAL_MEMORY_RANGE) * (RangeCount + 1), 0);
+  if (!Ranges) {
+    ExFreePool(MemoryMap);
+    return nullptr;
+  }
+
+  UINTN CurrentRange = 0;
+  for (UINTN i = 0; i < DescriptorCount; i++) {
+    EFI_MEMORY_DESCRIPTOR* desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)MemoryMap + i * DescriptorSize);
+     if (desc->Attribute & EFI_MEMORY_RUNTIME || desc->Type == EfiConventionalMemory || 
+        desc->Type == EfiLoaderCode || desc->Type == EfiLoaderData ||
+        desc->Type == EfiBootServicesCode || desc->Type == EfiBootServicesData) {
+      Ranges[CurrentRange].BaseAddress.QuadPart = desc->PhysicalStart;
+      Ranges[CurrentRange].NumberOfBytes.QuadPart = desc->NumberOfPages * PAGE_SIZE;
+      CurrentRange++;
+    }
+  }
+  // Terminator is zeroed by ExAllocatePoolZero
+  ExFreePool(MemoryMap);
+  return Ranges;
+}
+
+// Global page table state (stubs for UEFI)
 static ULONG_PTR g_utilp_pxe_base = 0;
 static ULONG_PTR g_utilp_ppe_base = 0;
 static ULONG_PTR g_utilp_pde_base = 0;
 static ULONG_PTR g_utilp_pte_base = 0;
 
-static ULONG_PTR g_utilp_pxi_shift = 0;
-static ULONG_PTR g_utilp_ppi_shift = 0;
-static ULONG_PTR g_utilp_pdi_shift = 0;
-static ULONG_PTR g_utilp_pti_shift = 0;
+static ULONG_PTR g_utilp_pxi_shift = 39;
+static ULONG_PTR g_utilp_ppi_shift = 30;
+static ULONG_PTR g_utilp_pdi_shift = 21;
+static ULONG_PTR g_utilp_pti_shift = 12;
 
-static ULONG_PTR g_utilp_pxi_mask = 0;
-static ULONG_PTR g_utilp_ppi_mask = 0;
-static ULONG_PTR g_utilp_pdi_mask = 0;
-static ULONG_PTR g_utilp_pti_mask = 0;
+static ULONG_PTR g_utilp_pxi_mask = 0x1ff;
+static ULONG_PTR g_utilp_ppi_mask = 0x1ff;
+static ULONG_PTR g_utilp_pdi_mask = 0x1ff;
+static ULONG_PTR g_utilp_pti_mask = 0x1ff;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -166,29 +230,11 @@ static ULONG_PTR g_utilp_pti_mask = 0;
 // Initializes utility functions
 _Use_decl_annotations_ NTSTATUS
 UtilInitialization(PDRIVER_OBJECT driver_object) {
-  PAGED_CODE()
-
-  auto status = UtilpInitializePageTableVariables();
-  Soapivisor_LOG_DEBUG(
-      "PXE at %016Ix, PPE at %016Ix, PDE at %016Ix, PTE at %016Ix",
-      g_utilp_pxe_base, g_utilp_ppe_base, g_utilp_pde_base, g_utilp_pte_base);
-  if (!NT_SUCCESS(status)) {
-    return status;
-  }
-
-  status = UtilpInitializeRtlPcToFileHeader(driver_object);
-  if (!NT_SUCCESS(status)) {
-    return status;
-  }
-
-  status = UtilpInitializePhysicalMemoryRanges();
-  if (!NT_SUCCESS(status)) {
-    return status;
-  }
-
-  g_utilp_MmAllocateContiguousNodeMemory =
-      static_cast<MmAllocateContiguousNodeMemoryType *>(
-          UtilGetSystemProcAddress(L"MmAllocateContiguousNodeMemory"));
+  UNREFERENCED_PARAMETER(driver_object);
+  
+  // In UEFI, we don't need to find Windows page table bases yet.
+  // We just initialize physical memory ranges.
+  auto status = UtilpInitializePhysicalMemoryRanges();
   return status;
 }
 
@@ -430,38 +476,25 @@ UtilGetPhysicalMemoryRanges() {
   return g_utilp_physical_memory_ranges;
 }
 
-// Execute a given callback routine on all processors in PASSIVE_LEVEL. Returns
-// STATUS_SUCCESS when all callback returned STATUS_SUCCESS as well. When
-// one of callbacks returns anything but STATUS_SUCCESS, this function stops
-// to call remaining callbacks and returns the value.
+// Execute a given callback routine on all processors.
 _Use_decl_annotations_ NTSTATUS
 UtilForEachProcessor(NTSTATUS (*callback_routine)(void *), void *context) {
-  PAGED_CODE()
+  if (!gMpServices) return STATUS_UNSUCCESSFUL;
 
-  const auto number_of_processors =
-      KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
-  for (ULONG processor_index = 0; processor_index < number_of_processors;
-       processor_index++) {
-    PROCESSOR_NUMBER processor_number = {};
-    auto status =
-        KeGetProcessorNumberFromIndex(processor_index, &processor_number);
-    if (!NT_SUCCESS(status)) {
-      return status;
-    }
+  UINTN NumberOfProcessors = 0;
+  UINTN NumberOfEnabledProcessors = 0;
+  gMpServices->GetNumberOfProcessors(gMpServices, &NumberOfProcessors, &NumberOfEnabledProcessors);
 
-    // Switch the current processor
-    GROUP_AFFINITY affinity = {};
-    affinity.Group = processor_number.Group;
-    affinity.Mask = 1ull << processor_number.Number;
-    GROUP_AFFINITY previous_affinity = {};
-    KeSetSystemGroupAffinityThread(&affinity, &previous_affinity);
-
-    // Execute callback
-    status = callback_routine(context);
-
-    KeRevertToUserGroupAffinityThread(&previous_affinity);
-    if (!NT_SUCCESS(status)) {
-      return status;
+  for (UINTN i = 0; i < NumberOfProcessors; i++) {
+    // Note: In UEFI, StartupThisAP can be used, but for initialization we often 
+    // just want to run on each one sequentially if we are already in a context 
+    // that allows it, or use the Startup protocol.
+    // Simplifying: we expect the caller to handle AP startup if needed, 
+    // or we use the protocol here.
+    if (i == 0) {
+      callback_routine(context);
+    } else {
+      gMpServices->StartupThisAP(gMpServices, (EFI_AP_PROCEDURE)callback_routine, i, nullptr, 0, context, nullptr);
     }
   }
   return STATUS_SUCCESS;
@@ -501,11 +534,8 @@ UtilForEachProcessorDpc(PKDEFERRED_ROUTINE deferred_routine, void *context) {
 
 // Sleep the current thread's execution for Millisecond milliseconds.
 _Use_decl_annotations_ NTSTATUS UtilSleep(LONG Millisecond) {
-  PAGED_CODE()
-
-  LARGE_INTEGER interval = {};
-  interval.QuadPart = -(10000 * Millisecond);  // msec
-  return KeDelayExecutionThread(KernelMode, FALSE, &interval);
+  gBS->Stall(Millisecond * 1000); // Stall takes microseconds
+  return STATUS_SUCCESS;
 }
 
 // memmem().
@@ -527,11 +557,8 @@ _Use_decl_annotations_ void *UtilMemMem(const void *search_base,
 // A wrapper of MmGetSystemRoutineAddress
 _Use_decl_annotations_ void *UtilGetSystemProcAddress(
     const wchar_t *proc_name) {
-  PAGED_CODE()
-
-  UNICODE_STRING proc_name_U = {};
-  RtlInitUnicodeString(&proc_name_U, proc_name);
-  return MmGetSystemRoutineAddress(&proc_name_U);
+  UNREFERENCED_PARAMETER(proc_name);
+  return nullptr; // No NT routines in UEFI
 }
 
 // Returns true when a system is on the x86 PAE mode
@@ -607,6 +634,17 @@ _Use_decl_annotations_ static HardwarePte *UtilpAddressToPde(
   return reinterpret_cast<HardwarePte *>(g_utilp_pde_base + offset);
 }
 
+// VA -> PA implementation for UEFI (Identity mapping)
+extern "C" PHYSICAL_ADDRESS MmGetPhysicalAddress(void* va) {
+  PHYSICAL_ADDRESS pa;
+  pa.QuadPart = (LONGLONG)va;
+  return pa;
+}
+
+extern "C" void* MmGetVirtualForPhysical(PHYSICAL_ADDRESS pa) {
+  return (void*)pa.QuadPart;
+}
+
 // Return an address of PTE
 _Use_decl_annotations_ static HardwarePte *UtilpAddressToPte(
     const void *address) {
@@ -618,8 +656,7 @@ _Use_decl_annotations_ static HardwarePte *UtilpAddressToPte(
 
 // VA -> PA
 _Use_decl_annotations_ ULONG64 UtilPaFromVa(void *va) {
-  const auto pa = MmGetPhysicalAddress(va);
-  return pa.QuadPart;
+  return (ULONG64)va;
 }
 
 // VA -> PFN

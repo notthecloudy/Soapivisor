@@ -64,6 +64,48 @@
   while (true) {}
 #endif
 
+// NT API Stubs for UEFI
+#define PAGED_CODE()
+#define NT_ASSERT(exp)
+#define PASSIVE_LEVEL 0
+#define APC_LEVEL 1
+#define DISPATCH_LEVEL 2
+
+typedef ULONG KIRQL;
+inline KIRQL KeGetCurrentIrql() { return PASSIVE_LEVEL; }
+
+// Pool Types (for ExAllocatePoolZero compatibility)
+typedef enum _POOL_TYPE {
+  NonPagedPool,
+  NonPagedPoolExecute,
+  PagedPool,
+  NonPagedPoolMustSucceed,
+  DontUseThisType,
+  NonPagedPoolCacheAligned,
+  PagedPoolCacheAligned,
+  NonPagedPoolMustSucceedSession,
+  DontUseThisTypeSession,
+  NonPagedPoolCacheAlignedSession,
+  PagedPoolCacheAlignedSession,
+  NonPagedPoolNx,
+  NonPagedPoolSessionNx,
+  NonPagedPoolNxCacheAligned,
+  NonPagedPoolSession
+} POOL_TYPE;
+
+// Memory allocation stubs
+extern "C" void* ExAllocatePoolZero(POOL_TYPE PoolType, SIZE_T NumberOfBytes, ULONG Tag);
+extern "C" void ExFreePoolWithTag(void* P, ULONG Tag);
+#define ExFreePool(P) ExFreePoolWithTag(P, 0)
+
+typedef struct _PHYSICAL_MEMORY_RANGE {
+  PHYSICAL_ADDRESS BaseAddress;
+  LARGE_INTEGER NumberOfBytes;
+} PHYSICAL_MEMORY_RANGE, *PPHYSICAL_MEMORY_RANGE;
+
+extern "C" PPHYSICAL_MEMORY_RANGE MmGetPhysicalMemoryRanges();
+#define MmFreePhysicalMemoryRanges(ranges) ExFreePoolWithTag(ranges, 0)
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // constants and macros

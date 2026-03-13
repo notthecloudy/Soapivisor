@@ -268,6 +268,7 @@ _Use_decl_annotations_ static void VmmpHandleVmExit(
       break;
     case VmxExitReason::kInvlpg:
       VmmpHandleInvalidateTlbEntry(guest_context);
+      break;
     case VmxExitReason::kCrAccess:
       VmmpHandleCrAccess(guest_context);
       break;
@@ -313,6 +314,13 @@ _Use_decl_annotations_ static void VmmpHandleVmExit(
     case VmxExitReason::kInvept:
     case VmxExitReason::kInvvpid:
       VmmpHandleVmx(guest_context);
+      break;
+    case VmxExitReason::kRdtsc:
+      VmmpHandleRdtsc(guest_context);
+      break;
+    case VmxExitReason::kRdtscp:
+      VmmpHandleRdtscp(guest_context);
+      break;
     case VmxExitReason::kXsetbv:
       VmmpHandleXsetbv(guest_context);
       break;
@@ -429,7 +437,7 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
     cpu_info[1] = 0;
     cpu_info[2] = 0;
     cpu_info[3] = 0;
-  } else if (function_id == 0x77777777) {
+  } else if (function_id == 0x400000FF) {
     // Expose dynamic shared buffer physical address to usermode caller
     extern UINT64 g_SharedBufferPhysicalAddress;
     cpu_info[0] = static_cast<int>(g_SharedBufferPhysicalAddress & 0xFFFFFFFF);
@@ -446,6 +454,30 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
   VmmpAdjustGuestInstructionPointer(guest_context);
 }
 
+// RDTSC
+_Use_decl_annotations_ static void VmmpHandleRdtsc(
+    GuestContext *guest_context) {
+  Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+  ULONG64 tsc = __rdtsc();
+  // Optionally apply kTscOffset if needed, but since we are executing in root mode
+  // and the true TSC offset is usually handled by VMX transparently, we'll return
+  // the host TSC (which is close enough).
+  guest_context->gp_regs->ax = tsc & 0xFFFFFFFF;
+  guest_context->gp_regs->dx = tsc >> 32;
+  VmmpAdjustGuestInstructionPointer(guest_context);
+}
+
+// RDTSCP
+_Use_decl_annotations_ static void VmmpHandleRdtscp(
+    GuestContext *guest_context) {
+  Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+  unsigned int tsc_aux = 0;
+  ULONG64 tsc = __rdtscp(&tsc_aux);
+  guest_context->gp_regs->ax = tsc & 0xFFFFFFFF;
+  guest_context->gp_regs->dx = tsc >> 32;
+  guest_context->gp_regs->cx = tsc_aux;
+  VmmpAdjustGuestInstructionPointer(guest_context);
+}
 
 // XSETBV. It is executed at the time of system resuming
 _Use_decl_annotations_ static void VmmpHandleXsetbv(

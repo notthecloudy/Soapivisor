@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // The hypervisor dynamically allocates this address in EfiReservedMemoryType 
-// and exposes it to usermode via CPUID leaf 0x77777777.
+// and exposes it to usermode via CPUID leaf 0x400000FF.
 extern UINT64 g_SharedBufferPhysicalAddress;
 
 struct HvRequest {

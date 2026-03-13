@@ -288,15 +288,9 @@ _Use_decl_annotations_ static void *VmpBuildMsrBitmap() {
   RTL_BITMAP bitmap_write_low_header = {};
   RtlInitializeBitMap(&bitmap_write_low_header, reinterpret_cast<PULONG>(bitmap_write_low), 1024 * CHAR_BIT);
 
-  // Intercept VMX Feature Control (0x3A)
-  RtlSetBits(&bitmap_read_low_header, static_cast<ULONG>(Msr::kIa32FeatureControl), 1);
-  RtlSetBits(&bitmap_write_low_header, static_cast<ULONG>(Msr::kIa32FeatureControl), 1);
-
-  // Intercept VMX MSRs (0x480 - 0x491)
-  for (ULONG msr = static_cast<ULONG>(Msr::kIa32VmxBasic); msr <= static_cast<ULONG>(Msr::kIa32VmxVmfunc); msr++) {
-    RtlSetBits(&bitmap_read_low_header, msr, 1);
-    RtlSetBits(&bitmap_write_low_header, msr, 1);
-  }
+  // Intercept VMX Feature Control (0x3A) optional, remove for stealth compatibility
+  // Intercept VMX MSRs (0x480 - 0x491) optional, remove for stealth compatibility
+  // By leaving the bitmap clear, guest VBS reads pure hardware metrics natively.
 
   return msr_bitmap;
 }
@@ -618,7 +612,7 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
   vm_procctl_requested.fields.use_io_bitmaps = true;
   vm_procctl_requested.fields.use_msr_bitmaps = true;
   vm_procctl_requested.fields.activate_secondary_control = true;
-  vm_procctl_requested.fields.use_tsc_offsetting = true;
+  vm_procctl_requested.fields.use_tsc_offseting = true;
   VmxProcessorBasedControls vm_procctl = {
       VmpAdjustControlValue((use_true_msrs) ? Msr::kIa32VmxTrueProcBasedCtls
                                             : Msr::kIa32VmxProcBasedCtls,
@@ -713,7 +707,14 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
   error |= UtilVmWrite64(VmcsField::kEptPointer, EptGetEptPointer(processor_data->ept_data));
   
   // Offset the guest TSC by a negative amount to hide VM-exit latency
-  error |= UtilVmWrite64(VmcsField::kTscOffset, static_cast<ULONG64>(-750));
+  // Calibrate TSC offset dynamically based on roughly typical CPUID latency
+  int cpu_info_cal[4];
+  ULONG64 tsc_start = __rdtsc();
+  __cpuid(cpu_info_cal, 0);
+  ULONG64 tsc_end = __rdtsc();
+  // Assume true VM-exit overhead is approx 3-4x native CPUID.
+  ULONG64 tsc_exit_latency = (tsc_end - tsc_start) * 4;
+  error |= UtilVmWrite64(VmcsField::kTscOffset, static_cast<ULONG64>(-tsc_exit_latency));
 
   /* 64-Bit Guest-State Fields */
   error |= UtilVmWrite64(VmcsField::kVmcsLinkPointer, MAXULONG64);
@@ -1015,7 +1016,7 @@ _Use_decl_annotations_ static void VmpFreeSharedData(
 // Tests if Soapivisor is already installed
 _Use_decl_annotations_ static bool VmpIsSoapivisorInstalled() {
   int cpu_info[4] = {-1, -1, -1, -1};
-  __cpuidex(cpu_info, 0x77777777, 0);
+  __cpuidex(cpu_info, 0x400000FF, 0);
 
   // If Soapivisor is installed, it returns the shared buffer physical address in eax/ebx,
   // and perfectly zero in ecx/edx. It avoids using any static ASCII signatures.
