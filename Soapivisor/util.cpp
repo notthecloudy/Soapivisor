@@ -275,6 +275,45 @@ _Use_decl_annotations_ bool IsHypervisorPage(UINT64 physical_address) {
   return false;
 }
 
+extern "C" {
+// Translates guest virtual address to guest physical address using the provided CR3
+_Use_decl_annotations_ UINT64 UtilTranslateGuestVirtualToPhysical(UINT64 guest_cr3, UINT64 gva) {
+    const UINT64 pml4_index = (gva >> 39) & 0x1FF;
+    const UINT64 pdpt_index = (gva >> 30) & 0x1FF;
+    const UINT64 pd_index   = (gva >> 21) & 0x1FF;
+    const UINT64 pt_index   = (gva >> 12) & 0x1FF;
+    const UINT64 offset     = gva & 0xFFF;
+
+    // 1. PML4
+    auto pml4 = static_cast<const HardwarePte*>(UtilVaFromPa(guest_cr3 & ~0xFFF));
+    if (!pml4 || !pml4[pml4_index].fields.present) return 0;
+
+    // 2. PDPT
+    auto pdpt = static_cast<const HardwarePte*>(UtilVaFromPa(pml4[pml4_index].fields.page_frame_number << 12));
+    if (!pdpt || !pdpt[pdpt_index].fields.present) return 0;
+    
+    // Check for 1GB large page
+    if (pdpt[pdpt_index].fields.large_page) {
+        return (pdpt[pdpt_index].fields.page_frame_number << 12) + (gva & 0x3FFFFFFF);
+    }
+
+    // 3. PD
+    auto pd = static_cast<const HardwarePte*>(UtilVaFromPa(pdpt[pdpt_index].fields.page_frame_number << 12));
+    if (!pd || !pd[pd_index].fields.present) return 0;
+    
+    // Check for 2MB large page
+    if (pd[pd_index].fields.large_page) {
+        return (pd[pd_index].fields.page_frame_number << 12) + (gva & 0x1FFFFF);
+    }
+
+    // 4. PT
+    auto pt = static_cast<const HardwarePte*>(UtilVaFromPa(pd[pd_index].fields.page_frame_number << 12));
+    if (!pt || !pt[pt_index].fields.present) return 0;
+
+    return (pt[pt_index].fields.page_frame_number << 12) + offset;
+}
+} // extern "C"
+
 // Terminates utility functions
 
 
@@ -563,22 +602,15 @@ _Use_decl_annotations_ void UtilFreeContiguousMemory(void *base_address) {
   UNREFERENCED_PARAMETER(base_address);
 }
 
-// Executes VMCALL
+// Executes VMCALL (Removed unsupported UEFI SEH)
 _Use_decl_annotations_ NTSTATUS UtilVmCall(HypercallNumber hypercall_number,
                                            void *context) {
-  __try {
-    const auto vmx_status = static_cast<VmxStatus>(
-        AsmVmxCall(static_cast<ULONG>(hypercall_number), context));
-    return (vmx_status == VmxStatus::kOk) ? STATUS_SUCCESS
-                                          : STATUS_UNSUCCESSFUL;
-
-#pragma prefast(suppress : __WARNING_EXCEPTIONEXECUTEHANDLER, "Catch all.");
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    const auto status = GetExceptionCode();
-    Soapivisor_COMMON_DBG_BREAK();
-    Soapivisor_LOG_WARN_SAFE("Exception thrown (code %08x)", status);
-    return status;
-  }
+  // Do NOT use __try/__except in UEFI. 
+  // Ensure you verify installation via CPUID leaf 0x400000FF before calling this.
+  const auto vmx_status = static_cast<VmxStatus>(
+      AsmVmxCall(static_cast<ULONG>(hypercall_number), context));
+  
+  return (vmx_status == VmxStatus::kOk) ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 }
 
 // Debug prints registers

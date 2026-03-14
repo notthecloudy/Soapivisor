@@ -25,6 +25,14 @@
 // types
 //
 
+/// Represents a cached translation from guest virtual to guest physical address
+struct GvaCacheEntry {
+  ULONG64 gva;
+  ULONG64 gpa;
+  ULONG64 cr3;
+  bool valid;
+};
+
 /// Represents VMM related data shared across all processors
 struct SharedProcessorData {
   volatile long reference_count;  //!< Number of processors sharing this data
@@ -41,6 +49,7 @@ struct ProcessorData {
   struct VmControlStructure* vmcs_region;   //!< VA of a VMCS region
   struct EptData* ept_data;                 //!< A pointer to EPT related data
   ULONG64 current_tsc_offset;               //!< The dynamically tracked TSC offset
+  GvaCacheEntry gva_cache[16];              //!< Translation cache (FIFO/Direct mapped)
 };
 
 /// nt!_KTRAP_FRAME on x86

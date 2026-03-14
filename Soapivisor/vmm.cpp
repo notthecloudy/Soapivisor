@@ -211,11 +211,8 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   // Dispatch the current VM-exit event
   VmmpHandleVmExit(&guest_context);
 
-  // Measure overhead and subtract it from the TSC offset
-  const auto end_tsc = __rdtsc();
-  const auto overhead = end_tsc - start_tsc + 200; // +asm entry/exit overhead
-  stack->processor_data->current_tsc_offset -= overhead;
-  UtilVmWrite64(VmcsField::kTscOffset, stack->processor_data->current_tsc_offset);
+  // Poll shared buffer for zero-VMCALL communication
+  VmmpHandleSharedBuffer(&guest_context);
 
   // See: Guidelines for Use of the INVVPID Instruction, and Guidelines for Use
   // of the INVEPT Instruction
@@ -467,10 +464,7 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
 _Use_decl_annotations_ static void VmmpHandleRdtsc(
     GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
-  ULONG64 tsc = __rdtsc();
-  // Optionally apply kTscOffset if needed, but since we are executing in root mode
-  // and the true TSC offset is usually handled by VMX transparently, we'll return
-  // the host TSC (which is close enough).
+  ULONG64 tsc = __rdtsc() + guest_context->stack->processor_data->current_tsc_offset;
   guest_context->gp_regs->ax = tsc & 0xFFFFFFFF;
   guest_context->gp_regs->dx = tsc >> 32;
   VmmpAdjustGuestInstructionPointer(guest_context);
@@ -480,11 +474,17 @@ _Use_decl_annotations_ static void VmmpHandleRdtsc(
 _Use_decl_annotations_ static void VmmpHandleRdtscp(
     GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+  
   unsigned int tsc_aux = 0;
-  ULONG64 tsc = __rdtscp(&tsc_aux);
+  // Read the actual hardware TSC and apply the offset for timing evasion
+  ULONG64 tsc = __rdtscp(&tsc_aux) + guest_context->stack->processor_data->current_tsc_offset; 
+  
   guest_context->gp_regs->ax = tsc & 0xFFFFFFFF;
   guest_context->gp_regs->dx = tsc >> 32;
-  guest_context->gp_regs->cx = KeGetCurrentProcessorNumberEx(nullptr); // Spoof to avoid topology mismatch
+  
+  // Return the REAL hardware processor ID, not a fake KeGetCurrentProcessorNumberEx
+  guest_context->gp_regs->cx = tsc_aux; 
+  
   VmmpAdjustGuestInstructionPointer(guest_context);
 }
 
@@ -1325,7 +1325,6 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
 // Handles real-time physical memory reads via the Shared Buffer
 _Use_decl_annotations_ static void VmmpHandleSharedBuffer(
     GuestContext *guest_context) {
-  UNREFERENCED_PARAMETER(guest_context);
   // Get pointer to the shared buffer page in hypervisor's virtual memory
   extern UINT64 g_SharedBufferPhysicalAddress;
   auto shared_page = static_cast<SharedBufferPage*>(UtilVaFromPa(g_SharedBufferPhysicalAddress));
@@ -1336,9 +1335,42 @@ _Use_decl_annotations_ static void VmmpHandleSharedBuffer(
     uint32_t count = shared_page->request.count;
     if (count > 64) count = 64; // Bounds Check
 
+    const auto guest_cr3 = VmmpGetKernelCr3();
+    auto processor_data = guest_context->stack->processor_data;
+
     for (uint32_t i = 0; i < count; i++) {
-        uint64_t paddr = shared_page->request.addresses[i];
-        void* va = UtilVaFromPa(paddr);
+        uint64_t addr = shared_page->request.addresses[i];
+        uint64_t gpa = 0;
+
+        // Simple Heuristic: Assume lower addresses or specific ranges are GVA?
+        // Better: Try to translate as GVA first if it looks like a kernel/user space address.
+        // For research, we check our 16-entry cache first.
+        bool cached = false;
+        for (auto& entry : processor_data->gva_cache) {
+          if (entry.valid && entry.gva == addr && entry.cr3 == guest_cr3) {
+            gpa = entry.gpa;
+            cached = true;
+            break;
+          }
+        }
+
+        if (!cached) {
+          // Attempt translation
+          gpa = UtilTranslateGuestVirtualToPhysical(guest_cr3, addr);
+          if (gpa) {
+            // Update cache (Simple FIFO/Direct)
+            auto& entry = processor_data->gva_cache[addr % 16];
+            entry.gva = addr;
+            entry.gpa = gpa;
+            entry.cr3 = guest_cr3;
+            entry.valid = true;
+          } else {
+            // If translation fails, treat as raw GPA (Identity mapped or direct access)
+            gpa = addr;
+          }
+        }
+
+        void* va = UtilVaFromPa(gpa);
         if (va) {
             shared_page->result.values[i] = *static_cast<uint64_t*>(va);
         } else {
