@@ -716,7 +716,8 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
   // Note: This is a pre-launch approximation and does not account for the full 
   // VM-exit roundtrip overhead, but provides a realistic baseline.
   ULONG64 tsc_exit_latency = (tsc_end - tsc_start) * 4;
-  error |= UtilVmWrite64(VmcsField::kTscOffset, static_cast<ULONG64>(-tsc_exit_latency));
+  const_cast<ProcessorData*>(processor_data)->current_tsc_offset = static_cast<ULONG64>(-tsc_exit_latency);
+  error |= UtilVmWrite64(VmcsField::kTscOffset, processor_data->current_tsc_offset);
 
   /* 64-Bit Guest-State Fields */
   error |= UtilVmWrite64(VmcsField::kVmcsLinkPointer, MAXULONG64);

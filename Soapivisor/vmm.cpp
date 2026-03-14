@@ -214,8 +214,8 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   // Measure overhead and subtract it from the TSC offset
   const auto end_tsc = __rdtsc();
   const auto overhead = end_tsc - start_tsc + 200; // +asm entry/exit overhead
-  const auto current_offset = UtilVmRead64(VmcsField::kTscOffset);
-  UtilVmWrite64(VmcsField::kTscOffset, current_offset - overhead);
+  stack->processor_data->current_tsc_offset -= overhead;
+  UtilVmWrite64(VmcsField::kTscOffset, stack->processor_data->current_tsc_offset);
 
   // See: Guidelines for Use of the INVVPID Instruction, and Guidelines for Use
   // of the INVEPT Instruction
@@ -446,6 +446,12 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
     if (function_id == 0x40000000) {
       // Return 0x40000000 as max leaf to indicate no hypervisor interface here.
       cpu_info[0] = 0x40000000;
+    } else if (function_id == 0x400000FF && sub_function_id == 0x534F4150) {
+      // "SOAP" ping for VmpIsSoapivisorInstalled
+      cpu_info[0] = 0x534F4150;
+      cpu_info[1] = 0x534F4150;
+      cpu_info[2] = 0x534F4150;
+      cpu_info[3] = 0x534F4150;
     }
   }
 
@@ -478,7 +484,7 @@ _Use_decl_annotations_ static void VmmpHandleRdtscp(
   ULONG64 tsc = __rdtscp(&tsc_aux);
   guest_context->gp_regs->ax = tsc & 0xFFFFFFFF;
   guest_context->gp_regs->dx = tsc >> 32;
-  guest_context->gp_regs->cx = tsc_aux;
+  guest_context->gp_regs->cx = KeGetCurrentProcessorNumberEx(nullptr); // Spoof to avoid topology mismatch
   VmmpAdjustGuestInstructionPointer(guest_context);
 }
 

@@ -143,8 +143,8 @@ extern "C" void* ExAllocatePoolZero(POOL_TYPE PoolType, SIZE_T NumberOfBytes, UL
   UNREFERENCED_PARAMETER(PoolType);
   UNREFERENCED_PARAMETER(Tag);
   void* p = nullptr;
-  // Use EfiRuntimeServicesData instead of ReservedMemory to reduce fingerprinting
-  EFI_STATUS status = gBS->AllocatePool(EfiRuntimeServicesData, NumberOfBytes, &p);
+  // Use EfiReservedMemoryType to reduce fingerprinting
+  EFI_STATUS status = gBS->AllocatePool(EfiReservedMemoryType, NumberOfBytes, &p);
   if (EFI_ERROR(status)) return nullptr;
   memset(p, 0, NumberOfBytes);
 
@@ -253,13 +253,13 @@ _Use_decl_annotations_ static NTSTATUS UtilpInitializePageTableVariables() {
 }
 
 // Hypervisor page registry for EPT hiding
-static UINT64 g_HypervisorPages[4096]; // Store up to 4096 pages (16MB) - adjust as needed
+static UINT64 g_HypervisorPages[16384]; // Store up to 16384 pages (64MB) - adjust as needed
 static volatile long g_HypervisorPageCount = 0;
 
 _Use_decl_annotations_ void UtilRegisterHypervisorPage(UINT64 physical_address) {
   const auto pfn = UtilPfnFromPa(physical_address);
   const auto index = InterlockedIncrement(&g_HypervisorPageCount) - 1;
-  if (index < 4096) {
+  if (index < 16384) {
     g_HypervisorPages[index] = pfn;
   }
 }
@@ -267,7 +267,7 @@ _Use_decl_annotations_ void UtilRegisterHypervisorPage(UINT64 physical_address) 
 _Use_decl_annotations_ bool IsHypervisorPage(UINT64 physical_address) {
   const auto pfn = UtilPfnFromPa(physical_address);
   const auto count = g_HypervisorPageCount;
-  for (long i = 0; i < count && i < 4096; i++) {
+  for (long i = 0; i < count && i < 16384; i++) {
     if (g_HypervisorPages[i] == pfn) {
       return true;
     }

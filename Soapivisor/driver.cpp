@@ -276,7 +276,6 @@ VOID SafeShutdown(UINT32 ErrorCode = 0) {
   VmTermination(); // High level call that wraps VMXOFF
 
   Print(L"[INFO] 3. Restoring saved MSRs and CRs...\n");
-  UtilTermination();
   PerfTermination();
   GlobalObjectTermination();
 
