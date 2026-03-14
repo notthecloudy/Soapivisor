@@ -115,9 +115,9 @@ BOOLEAN CheckVmxSupport() {
   return TRUE;
 }
 
-#include "shared_buffer.h"
+// 
+#include "vmm.h"
 
-UINT64 g_SharedBufferPhysicalAddress = 0;
 UINT64 g_HypervisorImageBase = 0;
 UINT64 g_HypervisorImageSize = 0;
 UINT64 g_DummyPagePhysicalAddress = 0;
@@ -129,11 +129,6 @@ extern "C" bool IsHypervisorPage(ULONG64 physical_address) {
   // Check main hypervisor image footprint
   if (physical_address >= g_HypervisorImageBase && 
       physical_address < (g_HypervisorImageBase + g_HypervisorImageSize)) {
-    return true;
-  }
-
-  // Check the dynamically allocated shared buffer page
-  if (physical_address == g_SharedBufferPhysicalAddress) {
     return true;
   }
 
@@ -167,21 +162,14 @@ BOOLEAN ReserveAllMemory() {
     gProcessorCount = MAX_LOGICAL_PROCESSORS; // Safety cap
   }
 
-  // Allocate 1 page for the dynamic Shared Buffer
-  EFI_STATUS s_buffer = gBS->AllocatePages(AllocateAnyPages, EfiReservedMemoryType, 1, &g_SharedBufferPhysicalAddress);
-  if (EFI_ERROR(s_buffer)) {
-    Print(L"[ERROR] Shared Buffer alloc failed: %r\n", s_buffer);
-    return FALSE;
-  }
-  gBS->SetMem((VOID*)(UINTN)g_SharedBufferPhysicalAddress, EFI_PAGE_SIZE, 0);
-
   // Allocate 1 page for the Dummy Page Hide mapping
   EFI_STATUS s_dummy = gBS->AllocatePages(AllocateAnyPages, EfiReservedMemoryType, 1, &g_DummyPagePhysicalAddress);
   if (EFI_ERROR(s_dummy)) {
     Print(L"[ERROR] Dummy Page alloc failed: %r\n", s_dummy);
     return FALSE;
   }
-  gBS->SetMem((VOID*)(UINTN)g_DummyPagePhysicalAddress, EFI_PAGE_SIZE, 0);
+  // Fill dummy page with benign UEFI entropy instead of zeros to evade anomaly detection
+  gBS->CopyMem((VOID*)(UINTN)g_DummyPagePhysicalAddress, (VOID*)(UINTN)gBS, EFI_PAGE_SIZE);
 
   // Allocate contiguous physical pages for EVERY logical processor
   for (UINTN cpu = 0; cpu < gProcessorCount; ++cpu) {
@@ -213,10 +201,6 @@ BOOLEAN ReserveAllMemory() {
 
 /// @brief Frees pre-allocated runtime resources if initialization fails or during shutdown.
 VOID FreeAllMemory() {
-  if (g_SharedBufferPhysicalAddress != 0) {
-    gBS->FreePages(g_SharedBufferPhysicalAddress, 1);
-    g_SharedBufferPhysicalAddress = 0;
-  }
   if (g_DummyPagePhysicalAddress != 0) {
     gBS->FreePages(g_DummyPagePhysicalAddress, 1);
     g_DummyPagePhysicalAddress = 0;

@@ -13,7 +13,7 @@
 #include "log.h"
 #include "util.h"
 #include "performance.h"
-#include "shared_buffer.h"
+#include "common.h"
 
 extern "C" {
 ////////////////////////////////////////////////////////////////////////////////
@@ -211,9 +211,6 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   // Dispatch the current VM-exit event
   VmmpHandleVmExit(&guest_context);
 
-  // Poll shared buffer for zero-VMCALL communication
-  VmmpHandleSharedBuffer(&guest_context);
-
   // See: Guidelines for Use of the INVVPID Instruction, and Guidelines for Use
   // of the INVEPT Instruction
   if (!guest_context.vm_continue) {
@@ -225,6 +222,15 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   if (IsX64()) {
     __writecr8(guest_context.cr8);
   }
+
+  // Global TSC Jitter Compensation:
+  // Subtract the hypervisor processing time from the guest TSC offset.
+  // This helps hide 'natural' exits (Interrupts, EPT violations) from timing heuristics.
+  const auto end_tsc = __rdtsc();
+  const auto duration = end_tsc - start_tsc + 150; // Total duration + entry/exit overhead constant
+  stack->processor_data->current_tsc_offset -= duration;
+  UtilVmWrite64(VmcsField::kTscOffset, stack->processor_data->current_tsc_offset);
+
   return guest_context.vm_continue;
 }
 #pragma warning(pop)
@@ -377,10 +383,13 @@ _Use_decl_annotations_ static void VmmpHandleException(
       const auto fault_address = UtilVmRead(VmcsField::kExitQualification);
 
       VmmpInjectInterruption(interruption_type, vector, true, fault_code.all);
-      Soapivisor_LOG_INFO_SAFE(
-          "GuestIp= %016Ix, #PF Fault= %016Ix Code= 0x%2x", guest_context->ip,
-          fault_address, fault_code.all);
       AsmWriteCR2(fault_address);
+
+    } else if (vector == InterruptionVector::kNmiInterrupt) {
+      // NMI (Vector 2)
+      // We must pass the NMI directly to the guest without an error code
+      VmmpInjectInterruption(interruption_type, vector, false, 0);
+      Soapivisor_LOG_INFO_SAFE("GuestIp= %016Ix, NMI Injected", guest_context->ip);
 
     } else if (vector == InterruptionVector::kGeneralProtectionException) {
       // # GP
@@ -428,10 +437,10 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
 
   if (function_id == 1) {
     // Hide hypervisor presence (Clear CPUID.1:ECX[31])
-    // But ensure VMX support is reported (bit 5) for Nested VMX
+    // Hide VMX support (Clear CPUID.1:ECX[bit 5]) to appear as bare-metal without VMX
     CpuFeaturesEcx cpu_features = {static_cast<ULONG32>(cpu_info[2])};
-    cpu_features.fields.not_used = false; // bit 31
-    cpu_features.fields.vmx = true;       // bit 5
+    cpu_features.fields.not_used = false; // bit 31 (Hypervisor Present)
+    cpu_features.fields.vmx = false;       // bit 5 (VMX support)
     cpu_info[2] = static_cast<int>(cpu_features.all);
   } else if (function_id >= 0x40000000 && function_id <= 0x400000FF) {
     // Intercept hypervisor leaves. Report zeros or minimal info to avoid self-ID.
@@ -445,10 +454,11 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
       cpu_info[0] = 0x40000000;
     } else if (function_id == 0x400000FF && sub_function_id == 0x534F4150) {
       // "SOAP" ping for VmpIsSoapivisorInstalled
-      cpu_info[0] = 0x534F4150;
-      cpu_info[1] = 0x534F4150;
-      cpu_info[2] = 0x534F4150;
       cpu_info[3] = 0x534F4150;
+    } else if (function_id == 0x89ABCDEF) {
+      // Poisoned CPUID communication trigger
+      VmmpHandleStealthRead(guest_context);
+      // Fall through to register application and IP adjustment
     }
   }
 
@@ -567,14 +577,18 @@ _Use_decl_annotations_ static void VmmpHandleMsrAccess(
         msr_value.QuadPart = UtilVmRead(vmcs_field);
       }
     } else {
-      // Shadowing for Nested VMX
+      // Deep Spoofing for MSR-based detection
       if (msr == Msr::kIa32FeatureControl) {
-        // Return hardware value but ensure Lock and VMXON outside SMX bits are set
-        msr_value.QuadPart = UtilReadMsr64(msr) | 0x5; // Lock (bit 0) | VMXON outside SMX (bit 2)
+        // Return Locked (bit 0) but CLEAR VMXON bits (bit 1, 2)
+        // This makes it look like VMX is disabled in BIOS.
+        msr_value.QuadPart = 0x1; 
       } else if (msr >= Msr::kIa32VmxBasic && msr <= Msr::kIa32VmxVmfunc) {
-        // Pass through VMX capability MSRs for now. 
-        // In a more advanced implementation, we would mask out features Soapivisor doesn't support nesting.
-        msr_value.QuadPart = UtilReadMsr64(msr);
+        // If the guest tries to read VMX capability MSRs while we report no VMX,
+        // it should trigger a #GP(0) because these MSRs technically don't exist.
+        VmmpInjectInterruption(InterruptionType::kHardwareException,
+                               InterruptionVector::kGeneralProtectionException,
+                               true, 0);
+        return;
       } else {
         msr_value.QuadPart = UtilReadMsr64(msr);
       }
@@ -1228,41 +1242,26 @@ _Use_decl_annotations_ static void VmmpHandleVmx(GuestContext *guest_context) {
   bool success = false;
 
   switch (exit_reason.fields.reason) {
-    case VmxExitReason::kVmon: {
-      // Emulate VMXON. In a full implementation, we would track the vmxon_region.
-      // For now, we satisfy the guest by returning success.
-      success = true;
-      break;
-    }
+    case VmxExitReason::kVmon:
     case VmxExitReason::kVmclear:
     case VmxExitReason::kVmptrld:
     case VmxExitReason::kVmptrst:
     case VmxExitReason::kVmread:
-    case VmxExitReason::kVmwrite: {
-      // Satisfy basic nested virtualization management instructions.
-      // Success is indicated by RFLAGS.CF=0 and RFLAGS.ZF=0.
-      success = true;
-      break;
+    case VmxExitReason::kVmwrite:
+    case VmxExitReason::kVmresume:
+    case VmxExitReason::kVmlaunch:
+    case VmxExitReason::kVmoff:
+    case VmxExitReason::kInvept:
+    case VmxExitReason::kInvvpid:
+    case VmxExitReason::kVmfunc: {
+      // Deep Stealth: Mask all VMX instructions as #UD (Invalid Opcode).
+      // This makes the hypervisor invisible even if an anti-cheat tries to manually execute VMX instructions.
+      VmmpInjectInterruption(InterruptionType::kHardwareException,
+                             InterruptionVector::kInvalidOpcodeException, false, 0);
+      return;
     }
     default:
       break;
-  }
-
-  // See: CONVENTIONS
-  if (success) {
-    guest_context->flag_reg.fields.cf = false;
-    guest_context->flag_reg.fields.pf = false;
-    guest_context->flag_reg.fields.af = false;
-    guest_context->flag_reg.fields.zf = false;
-    guest_context->flag_reg.fields.sf = false;
-    guest_context->flag_reg.fields.of = false;
-  } else {
-    guest_context->flag_reg.fields.cf = true;  // Error without status
-    guest_context->flag_reg.fields.pf = false;
-    guest_context->flag_reg.fields.af = false;
-    guest_context->flag_reg.fields.zf = false;
-    guest_context->flag_reg.fields.sf = false;
-    guest_context->flag_reg.fields.of = false;
   }
 
   UtilVmWrite(VmcsField::kGuestRflags, guest_context->flag_reg.all);
@@ -1310,10 +1309,6 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
           guest_context->stack->processor_data->shared_data;
       VmmpIndicateSuccessfulVmcall(guest_context);
       break;
-    case HypercallNumber::kProcessSharedBuffer:
-      VmmpHandleSharedBuffer(guest_context);
-      VmmpIndicateSuccessfulVmcall(guest_context);
-      break;
     case HypercallNumber::kPrepareForSleep:
       // De-virtualization requested due to S3/S4 transition.
       // We reuse the termination logic to cleanly VMXOFF all cores.
@@ -1322,65 +1317,77 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
   }
 }
 
-// Handles real-time physical memory reads via the Shared Buffer
-_Use_decl_annotations_ static void VmmpHandleSharedBuffer(
-    GuestContext *guest_context) {
-  // Get pointer to the shared buffer page in hypervisor's virtual memory
-  extern UINT64 g_SharedBufferPhysicalAddress;
-  auto shared_page = static_cast<SharedBufferPage*>(UtilVaFromPa(g_SharedBufferPhysicalAddress));
-  if (!shared_page) return;
+// Handles real-time GVA reads via Poisoned CPUID trigger (Leaf 0x89ABCDEF)
+_Use_decl_annotations_ static void VmmpHandleStealthRead(
+    GuestContext* guest_context) {
+    Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+    const auto start_tsc = __rdtsc();
 
-  // Process the request
-  if (shared_page->request.request_id != shared_page->result.request_id && shared_page->request.request_id != 0) {
-    uint32_t count = shared_page->request.count;
-    if (count > 64) count = 64; // Bounds Check
+    // Parameters passed via registers
+    const uint64_t target_cr3 = guest_context->gp_regs->cx;
+    const uint64_t addr_list_gva = guest_context->gp_regs->dx;
+    const uint64_t output_buffer_gva = guest_context->gp_regs->bx;
 
-    const auto guest_cr3 = VmmpGetKernelCr3();
-    auto processor_data = guest_context->stack->processor_data;
+    // Translate usermode GVAs to physical memory using the CALLER'S CR3
+    const uint64_t current_cr3 = UtilVmRead(VmcsField::kGuestCr3);
+    const uint64_t addr_list_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, addr_list_gva);
+    const uint64_t output_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, output_buffer_gva);
 
-    for (uint32_t i = 0; i < count; i++) {
-        uint64_t addr = shared_page->request.addresses[i];
-        uint64_t gpa = 0;
+    if (addr_list_phys && output_phys) {
+        auto addr_list = static_cast<uint64_t*>(UtilVaFromPa(addr_list_phys));
+        auto output = static_cast<uint64_t*>(UtilVaFromPa(output_phys));
 
-        // Simple Heuristic: Assume lower addresses or specific ranges are GVA?
-        // Better: Try to translate as GVA first if it looks like a kernel/user space address.
-        // For research, we check our 16-entry cache first.
-        bool cached = false;
-        for (auto& entry : processor_data->gva_cache) {
-          if (entry.valid && entry.gva == addr && entry.cr3 == guest_cr3) {
-            gpa = entry.gpa;
-            cached = true;
-            break;
-          }
-        }
+        if (addr_list && output) {
+            auto processor_data = guest_context->stack->processor_data;
+            
+            // For simplicity, we assume the list has a fixed max size or is null-terminated.
+            // Here we'll read up to 16 addresses for safety.
+            for (uint32_t i = 0; i < 16; i++) {
+                uint64_t gva = addr_list[i];
+                if (gva == 0) break;
 
-        if (!cached) {
-          // Attempt translation
-          gpa = UtilTranslateGuestVirtualToPhysical(guest_cr3, addr);
-          if (gpa) {
-            // Update cache (Simple FIFO/Direct)
-            auto& entry = processor_data->gva_cache[addr % 16];
-            entry.gva = addr;
-            entry.gpa = gpa;
-            entry.cr3 = guest_cr3;
-            entry.valid = true;
-          } else {
-            // If translation fails, treat as raw GPA (Identity mapped or direct access)
-            gpa = addr;
-          }
-        }
+                uint64_t gpa = 0;
+                bool cached = false;
+                for (auto& entry : processor_data->gva_cache) {
+                    if (entry.valid && entry.gva == gva && entry.cr3 == target_cr3) {
+                        gpa = entry.gpa;
+                        cached = true;
+                        break;
+                    }
+                }
 
-        void* va = UtilVaFromPa(gpa);
-        if (va) {
-            shared_page->result.values[i] = *static_cast<uint64_t*>(va);
-        } else {
-            shared_page->result.values[i] = 0;
+                if (!cached) {
+                    gpa = UtilTranslateGuestVirtualToPhysical(target_cr3, gva);
+                    if (gpa) {
+                        auto& entry = processor_data->gva_cache[gva % 16];
+                        entry.gva = gva;
+                        entry.gpa = gpa;
+                        entry.cr3 = target_cr3;
+                        entry.valid = true;
+                    }
+                }
+
+                if (gpa) {
+                    void* va = UtilVaFromPa(gpa);
+                    output[i] = (va) ? *static_cast<uint64_t*>(va) : 0;
+                } else {
+                    output[i] = 0;
+                }
+            }
         }
     }
 
-    // Signal completion
-    shared_page->result.request_id = shared_page->request.request_id;
-  }
+    // Spoof CPUID return
+    guest_context->gp_regs->ax = 0;
+    guest_context->gp_regs->bx = 0;
+    guest_context->gp_regs->cx = 0;
+    guest_context->gp_regs->dx = 0;
+
+    // TSC Compensation: Subtract the time spent in root mode from the guest offset
+    const auto end_tsc = __rdtsc();
+    const auto duration = end_tsc - start_tsc + 100; // Estimated entry/exit overhead
+    guest_context->stack->processor_data->current_tsc_offset -= duration;
+    UtilVmWrite64(VmcsField::kTscOffset, guest_context->stack->processor_data->current_tsc_offset);
 }
 
 // INVD
