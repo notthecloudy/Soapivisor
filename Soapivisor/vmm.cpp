@@ -1324,29 +1324,29 @@ _Use_decl_annotations_ static void VmmpHandleStealthRead(
     const auto start_tsc = __rdtsc();
 
     // Parameters passed via registers
-    const uint64_t target_cr3 = guest_context->gp_regs->cx;
-    const uint64_t addr_list_gva = guest_context->gp_regs->dx;
-    const uint64_t output_buffer_gva = guest_context->gp_regs->bx;
+    const ULONG64 target_cr3 = guest_context->gp_regs->cx;
+    const ULONG64 addr_list_gva = guest_context->gp_regs->dx;
+    const ULONG64 output_buffer_gva = guest_context->gp_regs->bx;
 
     // Translate usermode GVAs to physical memory using the CALLER'S CR3
-    const uint64_t current_cr3 = UtilVmRead(VmcsField::kGuestCr3);
-    const uint64_t addr_list_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, addr_list_gva);
-    const uint64_t output_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, output_buffer_gva);
+    const ULONG64 current_cr3 = UtilVmRead(VmcsField::kGuestCr3);
+    const ULONG64 addr_list_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, addr_list_gva);
+    const ULONG64 output_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, output_buffer_gva);
 
     if (addr_list_phys && output_phys) {
-        auto addr_list = static_cast<uint64_t*>(UtilVaFromPa(addr_list_phys));
-        auto output = static_cast<uint64_t*>(UtilVaFromPa(output_phys));
+        auto addr_list = static_cast<ULONG64*>(UtilVaFromPa(addr_list_phys));
+        auto output = static_cast<ULONG64*>(UtilVaFromPa(output_phys));
 
         if (addr_list && output) {
             auto processor_data = guest_context->stack->processor_data;
             
             // For simplicity, we assume the list has a fixed max size or is null-terminated.
             // Here we'll read up to 16 addresses for safety.
-            for (uint32_t i = 0; i < 16; i++) {
-                uint64_t gva = addr_list[i];
+            for (ULONG32 i = 0; i < 16; i++) {
+                ULONG64 gva = addr_list[i];
                 if (gva == 0) break;
 
-                uint64_t gpa = 0;
+                ULONG64 gpa = 0;
                 bool cached = false;
                 for (auto& entry : processor_data->gva_cache) {
                     if (entry.valid && entry.gva == gva && entry.cr3 == target_cr3) {
@@ -1369,7 +1369,7 @@ _Use_decl_annotations_ static void VmmpHandleStealthRead(
 
                 if (gpa) {
                     void* va = UtilVaFromPa(gpa);
-                    output[i] = (va) ? *static_cast<uint64_t*>(va) : 0;
+                    output[i] = (va) ? *static_cast<ULONG64*>(va) : 0;
                 } else {
                     output[i] = 0;
                 }

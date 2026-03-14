@@ -20,7 +20,7 @@
  * @param output_buffer Pointer to an array where the read uint64_t values will be stored.
  * @return 0 on success.
  */
-static inline int StealthReadGva(uint64_t target_cr3, uint64_t* gva_list, uint64_t* output_buffer) {
+static inline int StealthReadGva(unsigned __int64 target_cr3, unsigned __int64* gva_list, unsigned __int64* output_buffer) {
     int cpu_info[4];
     // Trigger the hypervisor via Poisoned CPUID
     // EAX = Leaf
