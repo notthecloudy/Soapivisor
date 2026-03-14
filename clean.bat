@@ -12,4 +12,7 @@ rmdir /s /q Soapivisor\x64
 rmdir /s /q Soapivisor\Debug
 rmdir /s /q Soapivisor\Release
 rmdir /s /q doxygen
+del /q Soapivisor_signed.efi
+del /q sb_cert.crt
+del /q sb_key.key
 pause
