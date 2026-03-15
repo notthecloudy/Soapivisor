@@ -70,7 +70,7 @@ enum class HypercallNumber : unsigned __int32 {
   kTerminateVmm = kMinimumHypercallNumber,  //!< Terminates VMM
   kPingVmm,                                 //!< Sends ping to the VMM
   kGetSharedProcessorData,                  //!< Returns shared processor data
-  kPrepareForSleep,                         //!< Prepares for S3/S4 transition (de-virtualize)
+  kPrepareForSleep,  //!< Prepares for S3/S4 transition (de-virtualize)
   kMaximumHypercallNumber = kPrepareForSleep,
 };
 
@@ -285,8 +285,8 @@ _IRQL_requires_max_(DISPATCH_LEVEL) NTSTATUS
 /// Registers a physical page as belonging to the hypervisor
 void UtilRegisterHypervisorPage(UINT64 physical_address);
 
-/// Checks if a physical page belongs to the hypervisor
-bool IsHypervisorPage(UINT64 physical_address);
+/// Checks if a physical page belongs to the hypervisor (registry check)
+bool IsHypervisorPageRegistry(UINT64 physical_address);
 
 ////////////////////////////////////////////////////////////////////////////////
 //
