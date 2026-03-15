@@ -32,8 +32,20 @@ uint64_t results[16];
 StealthReadGva(target_cr3, gva_list, results);
 ```
 
+## 📚 Documentation
+- **[Documents/ARCHITECTURE.md](Documents/ARCHITECTURE.md)**: Comprehensive technical analysis of the UEFI hypervisor architecture, covering:
+  - Secure Boot bypass techniques (CVE-2022-21894)
+  - TPM attestation and PCR manipulation
+  - VT-x/VMX initialization and VMCS construction
+  - L0/L1 nested virtualization for VBS compatibility
+  - Extended Page Tables (EPT) with MTRR synchronization
+  - NMI stack walking evasion
+  - RDTSC/RDTSCP timing attack mitigation
+  - Zero-VM-Exit shared memory architecture
+
 ## 🛠️ Build & Project Structure
 - **/Soapivisor**: Core hypervisor logic (`vmm.cpp`, `driver.cpp`).
+- **/Documents**: Technical documentation and architecture analysis.
 - **secure_boot_setup.bat**: Automated signing utility.
 - **clean.bat**: Full project workspace cleanup.
 
