@@ -25,6 +25,7 @@ extern "C" {
 #include "util.h"
 #include "vm.h"
 #include "performance.h"
+#include "stealth.h"
 
 #ifndef DEBUG
 #define Print(...)
@@ -390,11 +391,20 @@ EFI_STATUS EFIAPI UefiMain(IN EFI_HANDLE ImageHandle,
   auto status = GlobalObjectInitialization();
   status |= PerfInitialization();
   status |= UtilInitialization(nullptr);
+
+  // Initialize stealth subsystem for undetectable operation
+  // This configures NMI spoofing, TSC compensation, and advanced evasion
+  StealthConfig stealth_config;
+  StealthGetDefaultConfig(&stealth_config);
+  status |= StealthInitialization(&stealth_config);
+
   if (!NT_SUCCESS(status)) {
     Print(L"[ERROR] Memory/Resource Allocation Failed.\n");
     SafeShutdown(2);  // ErrorCode 2: Generic Initialization
     return EFI_DEVICE_ERROR;
   }
+
+  Print(L"[INFO] Stealth subsystem initialized.\n");
 
   Print(L"[INFO] Running resource self-tests...\n");
   if (!SelfTestResources()) {

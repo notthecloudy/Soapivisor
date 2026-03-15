@@ -68,6 +68,7 @@
     <ClCompile Include="global_object.cpp" />
     <ClCompile Include="log.cpp" />
     <ClCompile Include="performance.cpp" />
+    <ClCompile Include="stealth.cpp" />
     <ClCompile Include="util.cpp" />
     <ClCompile Include="vm.cpp" />
     <ClCompile Include="vmm.cpp" />
@@ -82,6 +83,7 @@
     <ClInclude Include="log.h" />
     <ClInclude Include="performance.h" />
     <ClInclude Include="perf_counter.h" />
+    <ClInclude Include="stealth.h" />
     <ClInclude Include="util.h" />
     <ClInclude Include="util_page_constants.h" />
     <ClInclude Include="vm.h" />

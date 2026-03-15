@@ -606,6 +606,9 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
       vm_exitctl_requested.all)};
 
   VmxPinBasedControls vm_pinctl_requested = {};
+  // Enable NMI exiting for stealth NMI interception and spoofing
+  vm_pinctl_requested.fields.nmi_exiting = true;
+  vm_pinctl_requested.fields.virtual_nmis = true;
   VmxPinBasedControls vm_pinctl = {
       VmpAdjustControlValue((use_true_msrs) ? Msr::kIa32VmxTruePinbasedCtls
                                             : Msr::kIa32VmxPinbasedCtls,
