@@ -140,10 +140,10 @@ inline ULONG GetSegmentLimit(_In_ ULONG selector) {
 #endif
 
 // Global shared data for all processors
-static SharedProcessorData* g_SharedData = nullptr;
+static SharedProcessorData *g_SharedData = nullptr;
 
 // Checks if a VMM can be installed, and so, installs it
-_Use_decl_annotations_ NTSTATUS VmInitialization(PerCpuData* cpu_data) {
+_Use_decl_annotations_ NTSTATUS VmInitialization(PerCpuData *cpu_data) {
   PAGED_CODE()
 
   if (VmpIsSoapivisorInstalled()) {
@@ -156,13 +156,13 @@ _Use_decl_annotations_ NTSTATUS VmInitialization(PerCpuData* cpu_data) {
 
   // Globally initialize shared data on the first CPU that executes this
   if (!g_SharedData) {
-      g_SharedData = VmpInitializeSharedData();
-      if (!g_SharedData) {
-          return STATUS_MEMORY_NOT_ALLOCATED;
-      }
-      
-      // Read and store all MTRRs to set a correct memory type for EPT
-      EptInitializeMtrrEntries();
+    g_SharedData = VmpInitializeSharedData();
+    if (!g_SharedData) {
+      return STATUS_MEMORY_NOT_ALLOCATED;
+    }
+
+    // Read and store all MTRRs to set a correct memory type for EPT
+    EptInitializeMtrrEntries();
   }
 
   // Virtualize the current processor using the externally allocated PerCpuData
@@ -239,9 +239,9 @@ _Use_decl_annotations_ static NTSTATUS VmpSetLockBitCallback(void *context) {
 _Use_decl_annotations_ static SharedProcessorData *VmpInitializeSharedData() {
   PAGED_CODE()
 
-  const auto shared_data = static_cast<SharedProcessorData *>(
-      ExAllocatePoolZero(NonPagedPool, sizeof(SharedProcessorData),
-                         kSoapivisorCommonPoolTag));
+  const auto shared_data =
+      static_cast<SharedProcessorData *>(ExAllocatePoolZero(
+          NonPagedPool, sizeof(SharedProcessorData), kSoapivisorCommonPoolTag));
   if (!shared_data) {
     return nullptr;
   }
@@ -283,14 +283,19 @@ _Use_decl_annotations_ static void *VmpBuildMsrBitmap() {
   const auto bitmap_write_low = static_cast<UCHAR *>(msr_bitmap) + 2048;
 
   RTL_BITMAP bitmap_read_low_header = {};
-  RtlInitializeBitMap(&bitmap_read_low_header, reinterpret_cast<PULONG>(bitmap_read_low), 1024 * CHAR_BIT);
+  RtlInitializeBitMap(&bitmap_read_low_header,
+                      reinterpret_cast<PULONG>(bitmap_read_low),
+                      1024 * CHAR_BIT);
 
   RTL_BITMAP bitmap_write_low_header = {};
-  RtlInitializeBitMap(&bitmap_write_low_header, reinterpret_cast<PULONG>(bitmap_write_low), 1024 * CHAR_BIT);
+  RtlInitializeBitMap(&bitmap_write_low_header,
+                      reinterpret_cast<PULONG>(bitmap_write_low),
+                      1024 * CHAR_BIT);
 
-  // Intercept VMX Feature Control (0x3A) optional, remove for stealth compatibility
-  // Intercept VMX MSRs (0x480 - 0x491) optional, remove for stealth compatibility
-  // By leaving the bitmap clear, guest VBS reads pure hardware metrics natively.
+  // Intercept VMX Feature Control (0x3A) optional, remove for stealth
+  // compatibility Intercept VMX MSRs (0x480 - 0x491) optional, remove for
+  // stealth compatibility By leaving the bitmap clear, guest VBS reads pure
+  // hardware metrics natively.
 
   return msr_bitmap;
 }
@@ -329,7 +334,7 @@ _Use_decl_annotations_ static NTSTATUS VmpStartVm(void *context) {
   PAGED_CODE()
 
   Soapivisor_LOG_INFO("Initializing VMX for the processor %lu.",
-                         KeGetCurrentProcessorNumberEx(nullptr));
+                      KeGetCurrentProcessorNumberEx(nullptr));
   const auto ok = AsmInitializeVm(VmpInitializeVm, context);
   NT_ASSERT(VmpIsSoapivisorInstalled() == ok);
   if (!ok) {
@@ -454,20 +459,20 @@ _Use_decl_annotations_ static void VmpInitializeVm(
       vmm_stack_region_base - sizeof(void *) - sizeof(MachineFrame);
 
   Soapivisor_LOG_DEBUG("vmm_stack_limit       = %p",
-                          processor_data->vmm_stack_limit);
+                       processor_data->vmm_stack_limit);
   Soapivisor_LOG_DEBUG("vmm_stack_region_base = %p",
-                          reinterpret_cast<void *>(vmm_stack_region_base));
+                       reinterpret_cast<void *>(vmm_stack_region_base));
   Soapivisor_LOG_DEBUG("vmm_stack_data        = %p",
-                          reinterpret_cast<void *>(vmm_stack_data));
+                       reinterpret_cast<void *>(vmm_stack_data));
   Soapivisor_LOG_DEBUG("vmm_stack_base        = %p",
-                          reinterpret_cast<void *>(vmm_stack_base));
+                       reinterpret_cast<void *>(vmm_stack_base));
   Soapivisor_LOG_DEBUG("processor_data        = %p stored at %p",
-                          processor_data,
-                          reinterpret_cast<void *>(vmm_stack_data));
+                       processor_data,
+                       reinterpret_cast<void *>(vmm_stack_data));
   Soapivisor_LOG_DEBUG("guest_stack_pointer   = %p",
-                          reinterpret_cast<void *>(guest_stack_pointer));
+                       reinterpret_cast<void *>(guest_stack_pointer));
   Soapivisor_LOG_DEBUG("guest_inst_pointer    = %p",
-                          reinterpret_cast<void *>(guest_instruction_pointer));
+                       reinterpret_cast<void *>(guest_instruction_pointer));
 
   // Set up VMCS
   if (!VmpEnterVmxMode(processor_data)) {
@@ -629,15 +634,15 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
       Msr::kIa32VmxProcBasedCtls2, vm_procctl2_requested.all)};
 
   Soapivisor_LOG_DEBUG("VmEntryControls                  = %08x",
-                          vm_entryctl.all);
+                       vm_entryctl.all);
   Soapivisor_LOG_DEBUG("VmExitControls                   = %08x",
-                          vm_exitctl.all);
+                       vm_exitctl.all);
   Soapivisor_LOG_DEBUG("PinBasedControls                 = %08x",
-                          vm_pinctl.all);
+                       vm_pinctl.all);
   Soapivisor_LOG_DEBUG("ProcessorBasedControls           = %08x",
-                          vm_procctl.all);
+                       vm_procctl.all);
   Soapivisor_LOG_DEBUG("SecondaryProcessorBasedControls  = %08x",
-                          vm_procctl2.all);
+                       vm_procctl2.all);
 
   // NOTE: Comment in any of those as needed
   const auto exception_bitmap =
@@ -949,7 +954,7 @@ _Use_decl_annotations_ static NTSTATUS VmpStopVm(void *context) {
   PAGED_CODE()
 
   Soapivisor_LOG_INFO("Terminating VMX for the processor %lu.",
-                         KeGetCurrentProcessorNumberEx(nullptr));
+                      KeGetCurrentProcessorNumberEx(nullptr));
 
   // Stop virtualization and get an address of the management structure
   ProcessorData *processor_data = nullptr;
@@ -1018,8 +1023,19 @@ _Use_decl_annotations_ static void VmpFreeSharedData(
 
 // Tests if Soapivisor is already installed
 _Use_decl_annotations_ static bool VmpIsSoapivisorInstalled() {
-  // Use kPingVmm hypercall to detect ourselves instead of a detectable CPUID leaf.
-  return (UtilVmCall(HypercallNumber::kPingVmm, nullptr) == STATUS_SUCCESS);
+  // Check if VMX is already enabled (CR4.VMXE = bit 13)
+  // If VMX is not enabled, we can't be installed yet.
+  Cr4 cr4 = {__readcr4()};
+  if (!cr4.fields.vmxe) {
+    return false;
+  }
+
+  // VMX is enabled, try to detect ourselves using CPUID leaf 0x400000FF
+  // with sub-function 0x534F4150 ("SOAP"). This works because our VMM
+  // intercepts this leaf and returns the magic value.
+  int cpu_info[4] = {};
+  __cpuidex(cpu_info, 0x400000FF, 0x534F4150);
+  return (static_cast<ULONG32>(cpu_info[3]) == 0x534F4150);
 }
 
 // Virtualizes the specified processor

@@ -311,36 +311,41 @@ _Use_decl_annotations_ void EptInitializeMtrrEntries() {
   // Get MAXPHYADDR
   int cpu_info[4];
   __cpuid(cpu_info, 0x80000008);
-  const auto physical_address_bits = 
+  const auto physical_address_bits =
       static_cast<unsigned char>(cpu_info[0] & 0xff);
   const auto max_phys_mask = (1ull << physical_address_bits) - 1;
 
   // Read all variable range MTRRs
   for (ULONG64 i = 0; i < mtrr_capabilities.fields.variable_range_count; i++) {
     // Read MTRR mask and check if it is in use
-    const auto phy_mask_msr = static_cast<ULONG>(Msr::kIa32MtrrPhysMaskN) + i * 2;
-    Ia32MtrrPhysMaskMsr mtrr_mask = {UtilReadMsr64(static_cast<Msr>(phy_mask_msr))};
+    const auto phy_mask_msr =
+        static_cast<ULONG>(Msr::kIa32MtrrPhysMaskN) + i * 2;
+    Ia32MtrrPhysMaskMsr mtrr_mask = {
+        UtilReadMsr64(static_cast<Msr>(phy_mask_msr))};
     if (!mtrr_mask.fields.valid) {
       continue;
     }
 
     // Correctly calculate the length based on the mask and MAXPHYADDR.
     // The mask only includes bits 12:MAXPHYADDR-1.
-    // Bits above MAXPHYADDR-1 are reserved and should be zero in the MSR, 
+    // Bits above MAXPHYADDR-1 are reserved and should be zero in the MSR,
     // but the hardware treats them as 1 for address matching.
     const auto mask = (mtrr_mask.fields.phys_mask << 12) & max_phys_mask;
-    
-    // Find the lowest set bit in the mask (above bit 11) to determine range size
+
+    // Find the lowest set bit in the mask (above bit 11) to determine range
+    // size
     unsigned long lowest_bit;
     if (!_BitScanForward64(&lowest_bit, mask)) {
-        continue;
+      continue;
     }
 
     const auto size = 1ull << lowest_bit;
 
     // Read MTRR base
-    const auto phy_base_msr = static_cast<ULONG>(Msr::kIa32MtrrPhysBaseN) + i * 2;
-    Ia32MtrrPhysBaseMsr mtrr_base = {UtilReadMsr64(static_cast<Msr>(phy_base_msr))};
+    const auto phy_base_msr =
+        static_cast<ULONG>(Msr::kIa32MtrrPhysBaseN) + i * 2;
+    Ia32MtrrPhysBaseMsr mtrr_base = {
+        UtilReadMsr64(static_cast<Msr>(phy_base_msr))};
     const auto base = mtrr_base.fields.phys_base * PAGE_SIZE;
     const auto end = base + size - 1;
 
@@ -472,9 +477,9 @@ _Use_decl_annotations_ EptData *EptInitialization() {
   // Allocate preallocated_entries
   const auto preallocated_entries_size =
       sizeof(EptCommonEntry *) * kEptpNumberOfPreallocatedEntries;
-  const auto preallocated_entries = static_cast<EptCommonEntry **>(
-      ExAllocatePoolZero(NonPagedPool, preallocated_entries_size,
-                         kSoapivisorCommonPoolTag));
+  const auto preallocated_entries =
+      static_cast<EptCommonEntry **>(ExAllocatePoolZero(
+          NonPagedPool, preallocated_entries_size, kSoapivisorCommonPoolTag));
   if (!preallocated_entries) {
     EptpDestructTables(ept_pml4, 4);
     ExFreePoolWithTag(ept_data, kSoapivisorCommonPoolTag);
@@ -517,9 +522,9 @@ _Use_decl_annotations_ static EptCommonEntry *EptpConstructTables(
         }
         EptpInitTableEntry(ept_pml4_entry, table_level, UtilPaFromVa(ept_pdpt));
       }
-      return EptpConstructTables(static_cast<EptCommonEntry *>(
-              UtilVaFromPfn(ept_pml4_entry->fields.physial_address)),
-          table_level - 1, physical_address, ept_data);
+      return EptpConstructTables(static_cast<EptCommonEntry *>(UtilVaFromPfn(
+                                     ept_pml4_entry->fields.physial_address)),
+                                 table_level - 1, physical_address, ept_data);
     }
     case 3: {
       // table == PDPT (1 GB)
@@ -532,9 +537,9 @@ _Use_decl_annotations_ static EptCommonEntry *EptpConstructTables(
         }
         EptpInitTableEntry(ept_pdpt_entry, table_level, UtilPaFromVa(ept_pdt));
       }
-      return EptpConstructTables(static_cast<EptCommonEntry *>(
-              UtilVaFromPfn(ept_pdpt_entry->fields.physial_address)),
-          table_level - 1, physical_address, ept_data);
+      return EptpConstructTables(static_cast<EptCommonEntry *>(UtilVaFromPfn(
+                                     ept_pdpt_entry->fields.physial_address)),
+                                 table_level - 1, physical_address, ept_data);
     }
     case 2: {
       // table == PDT (2 MB)
@@ -547,9 +552,9 @@ _Use_decl_annotations_ static EptCommonEntry *EptpConstructTables(
         }
         EptpInitTableEntry(ept_pdt_entry, table_level, UtilPaFromVa(ept_pt));
       }
-      return EptpConstructTables(static_cast<EptCommonEntry *>(
-              UtilVaFromPfn(ept_pdt_entry->fields.physial_address)),
-          table_level - 1, physical_address, ept_data);
+      return EptpConstructTables(static_cast<EptCommonEntry *>(UtilVaFromPfn(
+                                     ept_pdt_entry->fields.physial_address)),
+                                 table_level - 1, physical_address, ept_data);
     }
     case 1: {
       // table == PT (4 KB)
@@ -593,8 +598,8 @@ _Use_decl_annotations_ static EptCommonEntry *EptpAllocateEptEntryFromPool() {
   static const auto kAllocSize = 512 * sizeof(EptCommonEntry);
   static_assert(kAllocSize == PAGE_SIZE, "Size check");
 
-  const auto entry = static_cast<EptCommonEntry *>(ExAllocatePoolZero(
-      NonPagedPool, kAllocSize, kSoapivisorCommonPoolTag));
+  const auto entry = static_cast<EptCommonEntry *>(
+      ExAllocatePoolZero(NonPagedPool, kAllocSize, kSoapivisorCommonPoolTag));
   if (!entry) {
     return entry;
   }
@@ -602,21 +607,29 @@ _Use_decl_annotations_ static EptCommonEntry *EptpAllocateEptEntryFromPool() {
   return entry;
 }
 
-// Initialize an EPT entry with a "pass through" attribute, or dummy for VMM pages
+// Initialize an EPT entry with a "pass through" attribute, or dummy for VMM
+// pages
 _Use_decl_annotations_ static void EptpInitTableEntry(
     EptCommonEntry *entry, ULONG table_level, ULONG64 physical_address) {
   entry->fields.read_access = true;
   entry->fields.write_access = true;
   entry->fields.execute_access = true;
-  
+
   if (table_level == 1) {
     if (IsHypervisorPage(physical_address)) {
-       extern UINT64 g_DummyPagePhysicalAddress;
-       entry->fields.physial_address = UtilPfnFromPa(g_DummyPagePhysicalAddress);
+      extern UINT64 g_DummyPagePhysicalAddress;
+      // Ensure dummy page is allocated before using
+      if (g_DummyPagePhysicalAddress != 0) {
+        entry->fields.physial_address =
+            UtilPfnFromPa(g_DummyPagePhysicalAddress);
+      } else {
+        entry->fields.physial_address = UtilPfnFromPa(physical_address);
+      }
     } else {
-       entry->fields.physial_address = UtilPfnFromPa(physical_address);
+      entry->fields.physial_address = UtilPfnFromPa(physical_address);
     }
-    entry->fields.memory_type = static_cast<ULONG64>(EptpGetMemoryType(physical_address));
+    entry->fields.memory_type =
+        static_cast<ULONG64>(EptpGetMemoryType(physical_address));
   } else {
     entry->fields.physial_address = UtilPfnFromPa(physical_address);
   }
@@ -666,7 +679,7 @@ _Use_decl_annotations_ void EptHandleEptViolation(EptData *ept_data) {
       exit_qualification.fields.ept_executable) {
     Soapivisor_COMMON_DBG_BREAK();
     Soapivisor_LOG_ERROR_SAFE("[UNK1] VA = %p, PA = %016llx", fault_va,
-                                 fault_pa);
+                              fault_pa);
     return;
   }
 
@@ -674,7 +687,7 @@ _Use_decl_annotations_ void EptHandleEptViolation(EptData *ept_data) {
   if (ept_entry && ept_entry->all) {
     Soapivisor_COMMON_DBG_BREAK();
     Soapivisor_LOG_ERROR_SAFE("[UNK2] VA = %p, PA = %016llx", fault_va,
-                                 fault_pa);
+                              fault_pa);
     return;
   }
 
@@ -766,8 +779,8 @@ _Use_decl_annotations_ static EptCommonEntry *EptpGetEptPtEntry(
 // Frees all EPT stuff
 _Use_decl_annotations_ void EptTermination(EptData *ept_data) {
   Soapivisor_LOG_DEBUG("Used pre-allocated entries  = %2d / %2d",
-                          ept_data->preallocated_entries_count,
-                          kEptpNumberOfPreallocatedEntries);
+                       ept_data->preallocated_entries_count,
+                       kEptpNumberOfPreallocatedEntries);
 
   EptpFreeUnusedPreAllocatedEntries(ept_data->preallocated_entries,
                                     ept_data->preallocated_entries_count);

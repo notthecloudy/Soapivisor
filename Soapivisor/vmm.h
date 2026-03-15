@@ -48,8 +48,8 @@ struct ProcessorData {
   struct VmControlStructure* vmxon_region;  //!< VA of a VMXON region
   struct VmControlStructure* vmcs_region;   //!< VA of a VMCS region
   struct EptData* ept_data;                 //!< A pointer to EPT related data
-  ULONG64 current_tsc_offset;               //!< The dynamically tracked TSC offset
-  GvaCacheEntry gva_cache[16];              //!< Translation cache (FIFO/Direct mapped)
+  ULONG64 current_tsc_offset;   //!< The dynamically tracked TSC offset
+  GvaCacheEntry gva_cache[16];  //!< Translation cache (FIFO/Direct mapped)
 };
 
 /// nt!_KTRAP_FRAME on x86
@@ -62,8 +62,10 @@ struct KtrapFrameX86 {
 };
 static_assert(sizeof(KtrapFrameX86) == 0x8c, "structure size mismatch");
 #if !defined(__clang__)
-static_assert(FIELD_OFFSET(KtrapFrameX86, ip) == 0x68, "structure size mismatch");
-static_assert(FIELD_OFFSET(KtrapFrameX86, sp) == 0x74, "structure size mismatch");
+static_assert(FIELD_OFFSET(KtrapFrameX86, ip) == 0x68,
+              "structure size mismatch");
+static_assert(FIELD_OFFSET(KtrapFrameX86, sp) == 0x74,
+              "structure size mismatch");
 #endif
 
 /// nt!_KTRAP_FRAME on x64
@@ -76,8 +78,10 @@ struct KtrapFrameX64 {
 };
 static_assert(sizeof(KtrapFrameX64) == 0x190, "structure size mismatch");
 #if !defined(__clang__)
-static_assert(FIELD_OFFSET(KtrapFrameX64, ip) == 0x168, "structure size mismatch");
-static_assert(FIELD_OFFSET(KtrapFrameX64, sp) == 0x180, "structure size mismatch");
+static_assert(FIELD_OFFSET(KtrapFrameX64, ip) == 0x168,
+              "structure size mismatch");
+static_assert(FIELD_OFFSET(KtrapFrameX64, sp) == 0x180,
+              "structure size mismatch");
 #endif
 
 /// See: Stack Usage on Transfers to Interrupt and Exception-Handling Routines
@@ -99,6 +103,20 @@ using KtrapFrame = KtrapFrameX86;
 //
 // prototypes
 //
+
+// Forward declaration
+struct VmmInitialStack;
+
+/// @brief Main VM-exit handler entry point called from assembly
+/// @param stack Pointer to the VMM initial stack containing GP registers and
+/// processor data
+/// @return true to continue VM execution (vmresume), false to exit (vmxoff)
+bool __stdcall VmmVmExitHandler(_Inout_ VmmInitialStack* stack);
+
+/// @brief VMX failure handler called when VMRESUME or VMXOFF fails
+/// @param all_regs Pointer to all guest registers at time of failure
+DECLSPEC_NORETURN void __stdcall VmmVmxFailureHandler(
+    _Inout_ AllRegisters* all_regs);
 
 ////////////////////////////////////////////////////////////////////////////////
 //

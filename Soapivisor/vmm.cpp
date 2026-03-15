@@ -99,6 +99,7 @@ static void VmmpHandleException(_Inout_ GuestContext *guest_context);
 
 static void VmmpHandleCpuid(_Inout_ GuestContext *guest_context);
 
+static void VmmpHandleStealthRead(_Inout_ GuestContext *guest_context);
 
 static void VmmpHandleRdtsc(_Inout_ GuestContext *guest_context);
 
@@ -193,8 +194,8 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   GuestContext guest_context = {stack,
                                 UtilVmRead(VmcsField::kGuestRflags),
                                 UtilVmRead(VmcsField::kGuestRip),
-                                0, // guest_cr8 stub
-                                0, // guest_irql stub
+                                0,  // guest_cr8 stub
+                                0,  // guest_irql stub
                                 true};
   guest_context.gp_regs->sp = UtilVmRead(VmcsField::kGuestRsp);
 
@@ -225,11 +226,14 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
 
   // Global TSC Jitter Compensation:
   // Subtract the hypervisor processing time from the guest TSC offset.
-  // This helps hide 'natural' exits (Interrupts, EPT violations) from timing heuristics.
+  // This helps hide 'natural' exits (Interrupts, EPT violations) from timing
+  // heuristics.
   const auto end_tsc = __rdtsc();
-  const auto duration = end_tsc - start_tsc + 150; // Total duration + entry/exit overhead constant
+  const auto duration = end_tsc - start_tsc +
+                        150;  // Total duration + entry/exit overhead constant
   stack->processor_data->current_tsc_offset -= duration;
-  UtilVmWrite64(VmcsField::kTscOffset, stack->processor_data->current_tsc_offset);
+  UtilVmWrite64(VmcsField::kTscOffset,
+                stack->processor_data->current_tsc_offset);
 
   return guest_context.vm_continue;
 }
@@ -341,8 +345,8 @@ _Use_decl_annotations_ static void VmmpHandleTripleFault(
     GuestContext *guest_context) {
   VmmpDumpGuestState();
   Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kTripleFaultVmExit,
-                                 reinterpret_cast<ULONG_PTR>(guest_context),
-                                 guest_context->ip, 0);
+                              reinterpret_cast<ULONG_PTR>(guest_context),
+                              guest_context->ip, 0);
 }
 
 // Unexpected VM-exit. Fatal error.
@@ -351,8 +355,8 @@ _Use_decl_annotations_ static void VmmpHandleUnexpectedExit(
   VmmpDumpGuestState();
   const auto qualification = UtilVmRead(VmcsField::kExitQualification);
   Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnexpectedVmExit,
-                                 reinterpret_cast<ULONG_PTR>(guest_context),
-                                 guest_context->ip, qualification);
+                              reinterpret_cast<ULONG_PTR>(guest_context),
+                              guest_context->ip, qualification);
 }
 
 // MTF VM-exit
@@ -360,8 +364,8 @@ _Use_decl_annotations_ static void VmmpHandleMonitorTrap(
     GuestContext *guest_context) {
   VmmpDumpGuestState();
   Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnexpectedVmExit,
-                                 reinterpret_cast<ULONG_PTR>(guest_context),
-                                 guest_context->ip, 0);
+                              reinterpret_cast<ULONG_PTR>(guest_context),
+                              guest_context->ip, 0);
 }
 
 // Interrupt
@@ -389,7 +393,8 @@ _Use_decl_annotations_ static void VmmpHandleException(
       // NMI (Vector 2)
       // We must pass the NMI directly to the guest without an error code
       VmmpInjectInterruption(interruption_type, vector, false, 0);
-      Soapivisor_LOG_INFO_SAFE("GuestIp= %016Ix, NMI Injected", guest_context->ip);
+      Soapivisor_LOG_INFO_SAFE("GuestIp= %016Ix, NMI Injected",
+                               guest_context->ip);
 
     } else if (vector == InterruptionVector::kGeneralProtectionException) {
       // # GP
@@ -398,11 +403,10 @@ _Use_decl_annotations_ static void VmmpHandleException(
 
       VmmpInjectInterruption(interruption_type, vector, true, error_code);
       Soapivisor_LOG_INFO_SAFE("GuestIp= %016Ix, #GP Code= 0x%2x",
-                                  guest_context->ip, error_code);
+                               guest_context->ip, error_code);
 
     } else {
-      Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0,
-                                     0);
+      Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0, 0);
     }
 
   } else if (interruption_type == InterruptionType::kSoftwareException) {
@@ -416,12 +420,10 @@ _Use_decl_annotations_ static void VmmpHandleException(
       UtilVmWrite(VmcsField::kVmEntryInstructionLen, exit_inst_length);
 
     } else {
-      Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0,
-                                     0);
+      Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0, 0);
     }
   } else {
-    Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0,
-                                   0);
+    Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0, 0);
   }
 }
 
@@ -437,14 +439,16 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
 
   if (function_id == 1) {
     // Hide hypervisor presence (Clear CPUID.1:ECX[31])
-    // Hide VMX support (Clear CPUID.1:ECX[bit 5]) to appear as bare-metal without VMX
+    // Hide VMX support (Clear CPUID.1:ECX[bit 5]) to appear as bare-metal
+    // without VMX
     CpuFeaturesEcx cpu_features = {static_cast<ULONG32>(cpu_info[2])};
-    cpu_features.fields.not_used = false; // bit 31 (Hypervisor Present)
+    cpu_features.fields.not_used = false;  // bit 31 (Hypervisor Present)
     cpu_features.fields.vmx = false;       // bit 5 (VMX support)
     cpu_info[2] = static_cast<int>(cpu_features.all);
   } else if (function_id >= 0x40000000 && function_id <= 0x400000FF) {
-    // Intercept hypervisor leaves. Report zeros or minimal info to avoid self-ID.
-    // If virtualization is expected (Hyper-V), we should pass through or spoof Microsoft.
+    // Intercept hypervisor leaves. Report zeros or minimal info to avoid
+    // self-ID. If virtualization is expected (Hyper-V), we should pass through
+    // or spoof Microsoft.
     cpu_info[0] = 0;
     cpu_info[1] = 0;
     cpu_info[2] = 0;
@@ -455,11 +459,12 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
     } else if (function_id == 0x400000FF && sub_function_id == 0x534F4150) {
       // "SOAP" ping for VmpIsSoapivisorInstalled
       cpu_info[3] = 0x534F4150;
-    } else if (function_id == 0x89ABCDEF) {
-      // Poisoned CPUID communication trigger
-      VmmpHandleStealthRead(guest_context);
-      // Fall through to register application and IP adjustment
     }
+  } else if (function_id == 0x89ABCDEF) {
+    // Poisoned CPUID communication trigger
+    VmmpHandleStealthRead(guest_context);
+    VmmpAdjustGuestInstructionPointer(guest_context);
+    return;
   }
 
   guest_context->gp_regs->ax = cpu_info[0];
@@ -474,7 +479,8 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
 _Use_decl_annotations_ static void VmmpHandleRdtsc(
     GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
-  ULONG64 tsc = __rdtsc() + guest_context->stack->processor_data->current_tsc_offset;
+  ULONG64 tsc =
+      __rdtsc() + guest_context->stack->processor_data->current_tsc_offset;
   guest_context->gp_regs->ax = tsc & 0xFFFFFFFF;
   guest_context->gp_regs->dx = tsc >> 32;
   VmmpAdjustGuestInstructionPointer(guest_context);
@@ -484,17 +490,19 @@ _Use_decl_annotations_ static void VmmpHandleRdtsc(
 _Use_decl_annotations_ static void VmmpHandleRdtscp(
     GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
-  
+
   unsigned int tsc_aux = 0;
   // Read the actual hardware TSC and apply the offset for timing evasion
-  ULONG64 tsc = __rdtscp(&tsc_aux) + guest_context->stack->processor_data->current_tsc_offset; 
-  
+  ULONG64 tsc = __rdtscp(&tsc_aux) +
+                guest_context->stack->processor_data->current_tsc_offset;
+
   guest_context->gp_regs->ax = tsc & 0xFFFFFFFF;
   guest_context->gp_regs->dx = tsc >> 32;
-  
-  // Return the REAL hardware processor ID, not a fake KeGetCurrentProcessorNumberEx
-  guest_context->gp_regs->cx = tsc_aux; 
-  
+
+  // Return the REAL hardware processor ID, not a fake
+  // KeGetCurrentProcessorNumberEx
+  guest_context->gp_regs->cx = tsc_aux;
+
   VmmpAdjustGuestInstructionPointer(guest_context);
 }
 
@@ -514,7 +522,7 @@ _Use_decl_annotations_ static void VmmpHandleXsetbv(
 _Use_decl_annotations_ static void VmmpHandleMsrReadAccess(
     GuestContext *guest_context) {
   Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
-  
+
   // Directly pass MSR reads to the guest or VMCS layout
   VmmpHandleMsrAccess(guest_context, true);
 }
@@ -581,10 +589,11 @@ _Use_decl_annotations_ static void VmmpHandleMsrAccess(
       if (msr == Msr::kIa32FeatureControl) {
         // Return Locked (bit 0) but CLEAR VMXON bits (bit 1, 2)
         // This makes it look like VMX is disabled in BIOS.
-        msr_value.QuadPart = 0x1; 
+        msr_value.QuadPart = 0x1;
       } else if (msr >= Msr::kIa32VmxBasic && msr <= Msr::kIa32VmxVmfunc) {
-        // If the guest tries to read VMX capability MSRs while we report no VMX,
-        // it should trigger a #GP(0) because these MSRs technically don't exist.
+        // If the guest tries to read VMX capability MSRs while we report no
+        // VMX, it should trigger a #GP(0) because these MSRs technically don't
+        // exist.
         VmmpInjectInterruption(InterruptionType::kHardwareException,
                                InterruptionVector::kGeneralProtectionException,
                                true, 0);
@@ -607,7 +616,7 @@ _Use_decl_annotations_ static void VmmpHandleMsrAccess(
     } else {
       // Optional: Prevent guest from disabling VMX in FEAT_CTL
       if (msr == Msr::kIa32FeatureControl) {
-          // Ignore or handle appropriately
+        // Ignore or handle appropriately
       }
       UtilWriteMsr64(msr, msr_value.QuadPart);
     }
@@ -943,7 +952,7 @@ _Use_decl_annotations_ static void VmmpHandleDrAccess(
   switch (direction) {
     case MovDrDirection::kMoveToDr:
       switch (debugl_register) {
-        // clang-format off
+          // clang-format off
         case 0: __writedr(0, *register_used); break;
         case 1: __writedr(1, *register_used); break;
         case 2: __writedr(2, *register_used); break;
@@ -1030,9 +1039,8 @@ _Use_decl_annotations_ static void VmmpHandleIoPort(
   }
 
   Soapivisor_LOG_DEBUG_SAFE("GuestIp= %016Ix, Port= %04x, %s%s%s",
-                               guest_context->ip, port, (is_in ? "IN" : "OUT"),
-                               (is_string ? "S" : ""),
-                               (is_string ? suffix : ""));
+                            guest_context->ip, port, (is_in ? "IN" : "OUT"),
+                            (is_string ? "S" : ""), (is_string ? suffix : ""));
 
   VmmpIoWrapper(is_in, is_string, size_of_access, port, address, count);
 
@@ -1193,8 +1201,8 @@ _Use_decl_annotations_ static void VmmpHandleCrAccess(
         }
 
         default:
-          Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0,
-                                         0, 0);
+          Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0,
+                                      0);
           /* UNREACHABLE */
       }
       break;
@@ -1216,8 +1224,8 @@ _Use_decl_annotations_ static void VmmpHandleCrAccess(
         }
 
         default:
-          Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0,
-                                         0, 0);
+          Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kUnspecified, 0, 0,
+                                      0);
           /* UNREACHABLE */
       }
       break;
@@ -1255,9 +1263,11 @@ _Use_decl_annotations_ static void VmmpHandleVmx(GuestContext *guest_context) {
     case VmxExitReason::kInvvpid:
     case VmxExitReason::kVmfunc: {
       // Deep Stealth: Mask all VMX instructions as #UD (Invalid Opcode).
-      // This makes the hypervisor invisible even if an anti-cheat tries to manually execute VMX instructions.
+      // This makes the hypervisor invisible even if an anti-cheat tries to
+      // manually execute VMX instructions.
       VmmpInjectInterruption(InterruptionType::kHardwareException,
-                             InterruptionVector::kInvalidOpcodeException, false, 0);
+                             InterruptionVector::kInvalidOpcodeException, false,
+                             0);
       return;
     }
     default:
@@ -1319,75 +1329,80 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
 
 // Handles real-time GVA reads via Poisoned CPUID trigger (Leaf 0x89ABCDEF)
 _Use_decl_annotations_ static void VmmpHandleStealthRead(
-    GuestContext* guest_context) {
-    Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
-    const auto start_tsc = __rdtsc();
+    GuestContext *guest_context) {
+  Soapivisor_PERFORMANCE_MEASURE_THIS_SCOPE();
+  const auto start_tsc = __rdtsc();
 
-    // Parameters passed via registers
-    const ULONG64 target_cr3 = guest_context->gp_regs->cx;
-    const ULONG64 addr_list_gva = guest_context->gp_regs->dx;
-    const ULONG64 output_buffer_gva = guest_context->gp_regs->bx;
+  // Parameters passed via registers
+  const ULONG64 target_cr3 = guest_context->gp_regs->cx;
+  const ULONG64 addr_list_gva = guest_context->gp_regs->dx;
+  const ULONG64 output_buffer_gva = guest_context->gp_regs->bx;
 
-    // Translate usermode GVAs to physical memory using the CALLER'S CR3
-    const ULONG64 current_cr3 = UtilVmRead(VmcsField::kGuestCr3);
-    const ULONG64 addr_list_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, addr_list_gva);
-    const ULONG64 output_phys = UtilTranslateGuestVirtualToPhysical(current_cr3, output_buffer_gva);
+  // Translate usermode GVAs to physical memory using the CALLER'S CR3
+  const ULONG64 current_cr3 = UtilVmRead(VmcsField::kGuestCr3);
+  const ULONG64 addr_list_phys =
+      UtilTranslateGuestVirtualToPhysical(current_cr3, addr_list_gva);
+  const ULONG64 output_phys =
+      UtilTranslateGuestVirtualToPhysical(current_cr3, output_buffer_gva);
 
-    if (addr_list_phys && output_phys) {
-        auto addr_list = static_cast<ULONG64*>(UtilVaFromPa(addr_list_phys));
-        auto output = static_cast<ULONG64*>(UtilVaFromPa(output_phys));
+  if (addr_list_phys && output_phys) {
+    auto addr_list = static_cast<ULONG64 *>(UtilVaFromPa(addr_list_phys));
+    auto output = static_cast<ULONG64 *>(UtilVaFromPa(output_phys));
 
-        if (addr_list && output) {
-            auto processor_data = guest_context->stack->processor_data;
-            
-            // For simplicity, we assume the list has a fixed max size or is null-terminated.
-            // Here we'll read up to 16 addresses for safety.
-            for (ULONG32 i = 0; i < 16; i++) {
-                ULONG64 gva = addr_list[i];
-                if (gva == 0) break;
+    if (addr_list && output) {
+      auto processor_data = guest_context->stack->processor_data;
 
-                ULONG64 gpa = 0;
-                bool cached = false;
-                for (auto& entry : processor_data->gva_cache) {
-                    if (entry.valid && entry.gva == gva && entry.cr3 == target_cr3) {
-                        gpa = entry.gpa;
-                        cached = true;
-                        break;
-                    }
-                }
+      // For simplicity, we assume the list has a fixed max size or is
+      // null-terminated. Here we'll read up to 16 addresses for safety.
+      for (ULONG32 i = 0; i < 16; i++) {
+        ULONG64 gva = addr_list[i];
+        if (gva == 0) break;
 
-                if (!cached) {
-                    gpa = UtilTranslateGuestVirtualToPhysical(target_cr3, gva);
-                    if (gpa) {
-                        auto& entry = processor_data->gva_cache[gva % 16];
-                        entry.gva = gva;
-                        entry.gpa = gpa;
-                        entry.cr3 = target_cr3;
-                        entry.valid = true;
-                    }
-                }
-
-                if (gpa) {
-                    void* va = UtilVaFromPa(gpa);
-                    output[i] = (va) ? *static_cast<ULONG64*>(va) : 0;
-                } else {
-                    output[i] = 0;
-                }
-            }
+        ULONG64 gpa = 0;
+        bool cached = false;
+        for (auto &entry : processor_data->gva_cache) {
+          if (entry.valid && entry.gva == gva && entry.cr3 == target_cr3) {
+            gpa = entry.gpa;
+            cached = true;
+            break;
+          }
         }
+
+        if (!cached) {
+          gpa = UtilTranslateGuestVirtualToPhysical(target_cr3, gva);
+          if (gpa) {
+            auto &entry = processor_data->gva_cache[gva % 16];
+            entry.gva = gva;
+            entry.gpa = gpa;
+            entry.cr3 = target_cr3;
+            entry.valid = true;
+          }
+        }
+
+        if (gpa) {
+          void *va = UtilVaFromPa(gpa);
+          output[i] = (va) ? *static_cast<ULONG64 *>(va) : 0;
+        } else {
+          output[i] = 0;
+        }
+      }
     }
+  }
 
-    // Spoof CPUID return
-    guest_context->gp_regs->ax = 0;
-    guest_context->gp_regs->bx = 0;
-    guest_context->gp_regs->cx = 0;
-    guest_context->gp_regs->dx = 0;
+  // Spoof CPUID return
+  guest_context->gp_regs->ax = 0;
+  guest_context->gp_regs->bx = 0;
+  guest_context->gp_regs->cx = 0;
+  guest_context->gp_regs->dx = 0;
 
-    // TSC Compensation: Subtract the time spent in root mode from the guest offset
-    const auto end_tsc = __rdtsc();
-    const auto duration = end_tsc - start_tsc + 100; // Estimated entry/exit overhead
-    guest_context->stack->processor_data->current_tsc_offset -= duration;
-    UtilVmWrite64(VmcsField::kTscOffset, guest_context->stack->processor_data->current_tsc_offset);
+  // TSC Compensation: Subtract the time spent in root mode from the guest
+  // offset
+  const auto end_tsc = __rdtsc();
+  const auto duration =
+      end_tsc - start_tsc + 100;  // Estimated entry/exit overhead
+  guest_context->stack->processor_data->current_tsc_offset -= duration;
+  UtilVmWrite64(VmcsField::kTscOffset,
+                guest_context->stack->processor_data->current_tsc_offset);
 }
 
 // INVD
@@ -1427,8 +1442,8 @@ _Use_decl_annotations_ static void VmmpHandleEptMisconfig(
   const auto ept_pt_entry = EptGetEptPtEntry(
       guest_context->stack->processor_data->ept_data, fault_address);
   Soapivisor_COMMON_BUG_CHECK(SoapivisorBugCheck::kEptMisconfigVmExit,
-                                 fault_address,
-                                 reinterpret_cast<ULONG_PTR>(ept_pt_entry), 0);
+                              fault_address,
+                              reinterpret_cast<ULONG_PTR>(ept_pt_entry), 0);
 }
 
 // Selects a register to be used based on the index
@@ -1542,8 +1557,8 @@ _Use_decl_annotations_ void __stdcall VmmVmxFailureHandler(
                              ? UtilVmRead(VmcsField::kVmInstructionError)
                              : 0;
   Soapivisor_COMMON_BUG_CHECK(
-      SoapivisorBugCheck::kCriticalVmxInstructionFailure, vmx_error,
-      guest_ip, 0);
+      SoapivisorBugCheck::kCriticalVmxInstructionFailure, vmx_error, guest_ip,
+      0);
 }
 
 // Indicates successful VMCALL
@@ -1594,7 +1609,7 @@ _Use_decl_annotations_ static void VmmpHandleVmCallTermination(
   const auto result_ptr = static_cast<ProcessorData **>(context);
   *result_ptr = guest_context->stack->processor_data;
   Soapivisor_LOG_DEBUG_SAFE("Context at %p %p", context,
-                               guest_context->stack->processor_data);
+                            guest_context->stack->processor_data);
 
   // Set rip to the next instruction of VMCALL
   const auto exit_instruction_length =

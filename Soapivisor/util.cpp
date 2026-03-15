@@ -12,8 +12,8 @@
 #include "log.h"
 
 extern "C" {
-extern EFI_BOOT_SERVICES* gBS;
-extern EFI_MP_SERVICES_PROTOCOL* gMpServices;
+extern EFI_BOOT_SERVICES *gBS;
+extern EFI_MP_SERVICES_PROTOCOL *gMpServices;
 }
 
 extern "C" {
@@ -139,12 +139,14 @@ static HardwarePte *UtilpAddressToPte(_In_ const void *address);
 //
 
 // Memory allocation implementation for UEFI
-extern "C" void* ExAllocatePoolZero(POOL_TYPE PoolType, SIZE_T NumberOfBytes, ULONG Tag) {
+extern "C" void *ExAllocatePoolZero(POOL_TYPE PoolType, SIZE_T NumberOfBytes,
+                                    ULONG Tag) {
   UNREFERENCED_PARAMETER(PoolType);
   UNREFERENCED_PARAMETER(Tag);
-  void* p = nullptr;
+  void *p = nullptr;
   // Use EfiReservedMemoryType to reduce fingerprinting
-  EFI_STATUS status = gBS->AllocatePool(EfiReservedMemoryType, NumberOfBytes, &p);
+  EFI_STATUS status =
+      gBS->AllocatePool(EfiReservedMemoryType, NumberOfBytes, &p);
   if (EFI_ERROR(status)) return nullptr;
   memset(p, 0, NumberOfBytes);
 
@@ -156,25 +158,28 @@ extern "C" void* ExAllocatePoolZero(POOL_TYPE PoolType, SIZE_T NumberOfBytes, UL
   return p;
 }
 
-extern "C" void ExFreePoolWithTag(void* P, ULONG Tag) {
+extern "C" void ExFreePoolWithTag(void *P, ULONG Tag) {
   UNREFERENCED_PARAMETER(Tag);
   if (P) gBS->FreePool(P);
 }
 
 extern "C" PPHYSICAL_MEMORY_RANGE MmGetPhysicalMemoryRanges() {
   UINTN MemoryMapSize = 0;
-  EFI_MEMORY_DESCRIPTOR* MemoryMap = nullptr;
+  EFI_MEMORY_DESCRIPTOR *MemoryMap = nullptr;
   UINTN MapKey = 0;
   UINTN DescriptorSize = 0;
   UINT32 DescriptorVersion = 0;
 
   // Get map size
-  gBS->GetMemoryMap(&MemoryMapSize, nullptr, &MapKey, &DescriptorSize, &DescriptorVersion);
-  MemoryMapSize += 2 * DescriptorSize; // Buffer for growth
-  MemoryMap = (EFI_MEMORY_DESCRIPTOR*)ExAllocatePoolZero(NonPagedPool, MemoryMapSize, 0);
+  gBS->GetMemoryMap(&MemoryMapSize, nullptr, &MapKey, &DescriptorSize,
+                    &DescriptorVersion);
+  MemoryMapSize += 2 * DescriptorSize;  // Buffer for growth
+  MemoryMap = (EFI_MEMORY_DESCRIPTOR *)ExAllocatePoolZero(NonPagedPool,
+                                                          MemoryMapSize, 0);
   if (!MemoryMap) return nullptr;
 
-  EFI_STATUS status = gBS->GetMemoryMap(&MemoryMapSize, MemoryMap, &MapKey, &DescriptorSize, &DescriptorVersion);
+  EFI_STATUS status = gBS->GetMemoryMap(&MemoryMapSize, MemoryMap, &MapKey,
+                                        &DescriptorSize, &DescriptorVersion);
   if (EFI_ERROR(status)) {
     ExFreePool(MemoryMap);
     return nullptr;
@@ -183,15 +188,18 @@ extern "C" PPHYSICAL_MEMORY_RANGE MmGetPhysicalMemoryRanges() {
   UINTN DescriptorCount = MemoryMapSize / DescriptorSize;
   UINTN RangeCount = 0;
   for (UINTN i = 0; i < DescriptorCount; i++) {
-    EFI_MEMORY_DESCRIPTOR* desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)MemoryMap + i * DescriptorSize);
-    if (desc->Attribute & EFI_MEMORY_RUNTIME || desc->Type == EfiConventionalMemory || 
-        desc->Type == EfiLoaderCode || desc->Type == EfiLoaderData ||
-        desc->Type == EfiBootServicesCode || desc->Type == EfiBootServicesData) {
+    EFI_MEMORY_DESCRIPTOR *desc =
+        (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)MemoryMap + i * DescriptorSize);
+    if (desc->Attribute & EFI_MEMORY_RUNTIME ||
+        desc->Type == EfiConventionalMemory || desc->Type == EfiLoaderCode ||
+        desc->Type == EfiLoaderData || desc->Type == EfiBootServicesCode ||
+        desc->Type == EfiBootServicesData) {
       RangeCount++;
     }
   }
 
-  PPHYSICAL_MEMORY_RANGE Ranges = (PPHYSICAL_MEMORY_RANGE)ExAllocatePoolZero(NonPagedPool, sizeof(PHYSICAL_MEMORY_RANGE) * (RangeCount + 1), 0);
+  PPHYSICAL_MEMORY_RANGE Ranges = (PPHYSICAL_MEMORY_RANGE)ExAllocatePoolZero(
+      NonPagedPool, sizeof(PHYSICAL_MEMORY_RANGE) * (RangeCount + 1), 0);
   if (!Ranges) {
     ExFreePool(MemoryMap);
     return nullptr;
@@ -199,12 +207,15 @@ extern "C" PPHYSICAL_MEMORY_RANGE MmGetPhysicalMemoryRanges() {
 
   UINTN CurrentRange = 0;
   for (UINTN i = 0; i < DescriptorCount; i++) {
-    EFI_MEMORY_DESCRIPTOR* desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)MemoryMap + i * DescriptorSize);
-     if (desc->Attribute & EFI_MEMORY_RUNTIME || desc->Type == EfiConventionalMemory || 
-        desc->Type == EfiLoaderCode || desc->Type == EfiLoaderData ||
-        desc->Type == EfiBootServicesCode || desc->Type == EfiBootServicesData) {
+    EFI_MEMORY_DESCRIPTOR *desc =
+        (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)MemoryMap + i * DescriptorSize);
+    if (desc->Attribute & EFI_MEMORY_RUNTIME ||
+        desc->Type == EfiConventionalMemory || desc->Type == EfiLoaderCode ||
+        desc->Type == EfiLoaderData || desc->Type == EfiBootServicesCode ||
+        desc->Type == EfiBootServicesData) {
       Ranges[CurrentRange].BaseAddress.QuadPart = desc->PhysicalStart;
-      Ranges[CurrentRange].NumberOfBytes.QuadPart = desc->NumberOfPages * PAGE_SIZE;
+      Ranges[CurrentRange].NumberOfBytes.QuadPart =
+          desc->NumberOfPages * PAGE_SIZE;
       CurrentRange++;
     }
   }
@@ -238,7 +249,7 @@ static ULONG_PTR g_utilp_pti_mask = 0x1ff;
 _Use_decl_annotations_ NTSTATUS
 UtilInitialization(PDRIVER_OBJECT driver_object) {
   UNREFERENCED_PARAMETER(driver_object);
-  
+
   // In UEFI, we don't need to find Windows page table bases yet.
   // We just initialize physical memory ranges.
   auto status = UtilpInitializePhysicalMemoryRanges();
@@ -253,10 +264,12 @@ _Use_decl_annotations_ static NTSTATUS UtilpInitializePageTableVariables() {
 }
 
 // Hypervisor page registry for EPT hiding
-static UINT64 g_HypervisorPages[16384]; // Store up to 16384 pages (64MB) - adjust as needed
+static UINT64 g_HypervisorPages[16384];  // Store up to 16384 pages (64MB) -
+                                         // adjust as needed
 static volatile long g_HypervisorPageCount = 0;
 
-_Use_decl_annotations_ void UtilRegisterHypervisorPage(UINT64 physical_address) {
+_Use_decl_annotations_ void UtilRegisterHypervisorPage(
+    UINT64 physical_address) {
   const auto pfn = UtilPfnFromPa(physical_address);
   const auto index = InterlockedIncrement(&g_HypervisorPageCount) - 1;
   if (index < 16384) {
@@ -264,7 +277,7 @@ _Use_decl_annotations_ void UtilRegisterHypervisorPage(UINT64 physical_address) 
   }
 }
 
-_Use_decl_annotations_ bool IsHypervisorPage(UINT64 physical_address) {
+_Use_decl_annotations_ bool IsHypervisorPageRegistry(UINT64 physical_address) {
   const auto pfn = UtilPfnFromPa(physical_address);
   const auto count = g_HypervisorPageCount;
   for (long i = 0; i < count && i < 16384; i++) {
@@ -276,47 +289,52 @@ _Use_decl_annotations_ bool IsHypervisorPage(UINT64 physical_address) {
 }
 
 extern "C" {
-// Translates guest virtual address to guest physical address using the provided CR3
-_Use_decl_annotations_ UINT64 UtilTranslateGuestVirtualToPhysical(UINT64 guest_cr3, UINT64 gva) {
-    const UINT64 pml4_index = (gva >> 39) & 0x1FF;
-    const UINT64 pdpt_index = (gva >> 30) & 0x1FF;
-    const UINT64 pd_index   = (gva >> 21) & 0x1FF;
-    const UINT64 pt_index   = (gva >> 12) & 0x1FF;
-    const UINT64 offset     = gva & 0xFFF;
+// Translates guest virtual address to guest physical address using the provided
+// CR3
+_Use_decl_annotations_ UINT64
+UtilTranslateGuestVirtualToPhysical(UINT64 guest_cr3, UINT64 gva) {
+  const UINT64 pml4_index = (gva >> 39) & 0x1FF;
+  const UINT64 pdpt_index = (gva >> 30) & 0x1FF;
+  const UINT64 pd_index = (gva >> 21) & 0x1FF;
+  const UINT64 pt_index = (gva >> 12) & 0x1FF;
+  const UINT64 offset = gva & 0xFFF;
 
-    // 1. PML4
-    auto pml4 = static_cast<const HardwarePte*>(UtilVaFromPa(guest_cr3 & ~0xFFF));
-    if (!pml4 || !pml4[pml4_index].fields.present) return 0;
+  // 1. PML4
+  auto pml4 =
+      static_cast<const HardwarePte *>(UtilVaFromPa(guest_cr3 & ~0xFFF));
+  if (!pml4 || !pml4[pml4_index].fields.present) return 0;
 
-    // 2. PDPT
-    auto pdpt = static_cast<const HardwarePte*>(UtilVaFromPa(pml4[pml4_index].fields.page_frame_number << 12));
-    if (!pdpt || !pdpt[pdpt_index].fields.present) return 0;
-    
-    // Check for 1GB large page
-    if (pdpt[pdpt_index].fields.large_page) {
-        return (pdpt[pdpt_index].fields.page_frame_number << 12) + (gva & 0x3FFFFFFF);
-    }
+  // 2. PDPT
+  auto pdpt = static_cast<const HardwarePte *>(
+      UtilVaFromPa(pml4[pml4_index].fields.page_frame_number << 12));
+  if (!pdpt || !pdpt[pdpt_index].fields.present) return 0;
 
-    // 3. PD
-    auto pd = static_cast<const HardwarePte*>(UtilVaFromPa(pdpt[pdpt_index].fields.page_frame_number << 12));
-    if (!pd || !pd[pd_index].fields.present) return 0;
-    
-    // Check for 2MB large page
-    if (pd[pd_index].fields.large_page) {
-        return (pd[pd_index].fields.page_frame_number << 12) + (gva & 0x1FFFFF);
-    }
+  // Check for 1GB large page
+  if (pdpt[pdpt_index].fields.large_page) {
+    return (pdpt[pdpt_index].fields.page_frame_number << 12) +
+           (gva & 0x3FFFFFFF);
+  }
 
-    // 4. PT
-    auto pt = static_cast<const HardwarePte*>(UtilVaFromPa(pd[pd_index].fields.page_frame_number << 12));
-    if (!pt || !pt[pt_index].fields.present) return 0;
+  // 3. PD
+  auto pd = static_cast<const HardwarePte *>(
+      UtilVaFromPa(pdpt[pdpt_index].fields.page_frame_number << 12));
+  if (!pd || !pd[pd_index].fields.present) return 0;
 
-    return (pt[pt_index].fields.page_frame_number << 12) + offset;
+  // Check for 2MB large page
+  if (pd[pd_index].fields.large_page) {
+    return (pd[pd_index].fields.page_frame_number << 12) + (gva & 0x1FFFFF);
+  }
+
+  // 4. PT
+  auto pt = static_cast<const HardwarePte *>(
+      UtilVaFromPa(pd[pd_index].fields.page_frame_number << 12));
+  if (!pt || !pt[pt_index].fields.present) return 0;
+
+  return (pt[pt_index].fields.page_frame_number << 12) + offset;
 }
-} // extern "C"
+}  // extern "C"
 
 // Terminates utility functions
-
-
 
 // Initializes the physical memory ranges
 _Use_decl_annotations_ static NTSTATUS UtilpInitializePhysicalMemoryRanges() {
@@ -332,9 +350,8 @@ _Use_decl_annotations_ static NTSTATUS UtilpInitializePhysicalMemoryRanges() {
   for (auto i = 0ul; i < ranges->number_of_runs; ++i) {
     const auto base_addr =
         static_cast<ULONG64>(ranges->run[i].base_page) * PAGE_SIZE;
-    Soapivisor_LOG_DEBUG("Physical Memory Range: %016llx - %016llx",
-                            base_addr,
-                            base_addr + ranges->run[i].page_count * PAGE_SIZE);
+    Soapivisor_LOG_DEBUG("Physical Memory Range: %016llx - %016llx", base_addr,
+                         base_addr + ranges->run[i].page_count * PAGE_SIZE);
   }
 
   const auto pm_size =
@@ -410,18 +427,21 @@ UtilForEachProcessor(NTSTATUS (*callback_routine)(void *), void *context) {
 
   UINTN NumberOfProcessors = 0;
   UINTN NumberOfEnabledProcessors = 0;
-  gMpServices->GetNumberOfProcessors(gMpServices, &NumberOfProcessors, &NumberOfEnabledProcessors);
+  gMpServices->GetNumberOfProcessors(gMpServices, &NumberOfProcessors,
+                                     &NumberOfEnabledProcessors);
 
   for (UINTN i = 0; i < NumberOfProcessors; i++) {
-    // Note: In UEFI, StartupThisAP can be used, but for initialization we often 
-    // just want to run on each one sequentially if we are already in a context 
+    // Note: In UEFI, StartupThisAP can be used, but for initialization we often
+    // just want to run on each one sequentially if we are already in a context
     // that allows it, or use the Startup protocol.
-    // Simplifying: we expect the caller to handle AP startup if needed, 
+    // Simplifying: we expect the caller to handle AP startup if needed,
     // or we use the protocol here.
     if (i == 0) {
       callback_routine(context);
     } else {
-      gMpServices->StartupThisAP(gMpServices, (EFI_AP_PROCEDURE)callback_routine, i, nullptr, 0, context, nullptr);
+      gMpServices->StartupThisAP(gMpServices,
+                                 (EFI_AP_PROCEDURE)callback_routine, i, nullptr,
+                                 0, context, nullptr);
     }
   }
   return STATUS_SUCCESS;
@@ -438,7 +458,7 @@ UtilForEachProcessorDpc(PKDEFERRED_ROUTINE deferred_routine, void *context) {
 
 // Sleep the current thread's execution for Millisecond milliseconds.
 _Use_decl_annotations_ NTSTATUS UtilSleep(LONG Millisecond) {
-  gBS->Stall(Millisecond * 1000); // Stall takes microseconds
+  gBS->Stall(Millisecond * 1000);  // Stall takes microseconds
   return STATUS_SUCCESS;
 }
 
@@ -462,7 +482,7 @@ _Use_decl_annotations_ void *UtilMemMem(const void *search_base,
 _Use_decl_annotations_ void *UtilGetSystemProcAddress(
     const wchar_t *proc_name) {
   UNREFERENCED_PARAMETER(proc_name);
-  return nullptr; // No NT routines in UEFI
+  return nullptr;  // No NT routines in UEFI
 }
 
 // Returns true when a system is on the x86 PAE mode
@@ -539,14 +559,14 @@ _Use_decl_annotations_ static HardwarePte *UtilpAddressToPde(
 }
 
 // VA -> PA implementation for UEFI (Identity mapping)
-extern "C" PHYSICAL_ADDRESS MmGetPhysicalAddress(void* va) {
+extern "C" PHYSICAL_ADDRESS MmGetPhysicalAddress(void *va) {
   PHYSICAL_ADDRESS pa;
   pa.QuadPart = (LONGLONG)va;
   return pa;
 }
 
-extern "C" void* MmGetVirtualForPhysical(PHYSICAL_ADDRESS pa) {
-  return (void*)pa.QuadPart;
+extern "C" void *MmGetVirtualForPhysical(PHYSICAL_ADDRESS pa) {
+  return (void *)pa.QuadPart;
 }
 
 // Return an address of PTE
@@ -559,9 +579,7 @@ _Use_decl_annotations_ static HardwarePte *UtilpAddressToPte(
 }
 
 // VA -> PA
-_Use_decl_annotations_ ULONG64 UtilPaFromVa(void *va) {
-  return (ULONG64)va;
-}
+_Use_decl_annotations_ ULONG64 UtilPaFromVa(void *va) { return (ULONG64)va; }
 
 // VA -> PFN
 _Use_decl_annotations_ PFN_NUMBER UtilPfnFromVa(void *va) {
@@ -605,11 +623,12 @@ _Use_decl_annotations_ void UtilFreeContiguousMemory(void *base_address) {
 // Executes VMCALL (Removed unsupported UEFI SEH)
 _Use_decl_annotations_ NTSTATUS UtilVmCall(HypercallNumber hypercall_number,
                                            void *context) {
-  // Do NOT use __try/__except in UEFI. 
-  // Ensure you verify installation via CPUID leaf 0x400000FF before calling this.
+  // Do NOT use __try/__except in UEFI.
+  // Ensure you verify installation via CPUID leaf 0x400000FF before calling
+  // this.
   const auto vmx_status = static_cast<VmxStatus>(
       AsmVmxCall(static_cast<ULONG>(hypercall_number), context));
-  
+
   return (vmx_status == VmxStatus::kOk) ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 }
 
@@ -801,8 +820,9 @@ _Use_decl_annotations_ void UtilLoadPdptes(ULONG_PTR cr3_value) {
 _Use_decl_annotations_ NTSTATUS UtilForceCopyMemory(void *destination,
                                                     const void *source,
                                                     SIZE_T length) {
-  // In UEFI we assume identity mapping and no write-protection enforced by CR0.WP 
-  // yet for these areas. Simple memcpy is sufficient and kernel MDLs are non-existent.
+  // In UEFI we assume identity mapping and no write-protection enforced by
+  // CR0.WP yet for these areas. Simple memcpy is sufficient and kernel MDLs are
+  // non-existent.
   memcpy(destination, source, length);
   return STATUS_SUCCESS;
 }
